@@ -1,0 +1,32 @@
+name: Safie Auto Downloader
+
+on:
+  repository_dispatch:
+    types: [trigger_download]
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        pip install selenium google-api-python-client google-auth-httplib2 google-auth-oauthlib
+        sudo apt-get update
+        sudo apt-get install -y libnss3 libgbm1 libasound2
+
+    - name: Run Downloader
+      env:
+        SAFIE_ID: ${{ secrets.SAFIE_ID }}
+        SAFIE_PW: ${{ secrets.SAFIE_PW }}
+        DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        G_CREDENTIALS: ${{ secrets.G_CREDENTIALS }}
+        DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
+      run: python main.py
