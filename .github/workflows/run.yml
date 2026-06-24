@@ -20,13 +20,13 @@ jobs:
       run: |
         pip install selenium google-api-python-client google-auth-httplib2 google-auth-oauthlib requests
         sudo apt-get update
-        sudo apt-get install -y libnss3 libgbm1 libasound2
+        # 💡 新旧のLinux環境どちらでもエラーにならない安全なパッケージ指定に変更しました
+        sudo apt-get install -y libnss3 libgbm1 libasound2t64 || sudo apt-get install -y libnss3 libgbm1 libasound2
 
     - name: Run Downloader
       env:
         SAFIE_ID: ${{ secrets.SAFIE_ID }}
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
         GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
-        # 💡 GASからの client_payload.download_url を確実に環境変数へ注入します
         DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
       run: python main.py
