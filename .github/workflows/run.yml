@@ -20,7 +20,6 @@ jobs:
       run: |
         pip install selenium google-api-python-client google-auth-httplib2 google-auth-oauthlib requests
         sudo apt-get update
-        # 💡 新旧のLinux環境どちらでもエラーにならない安全なパッケージ指定に変更しました
         sudo apt-get install -y libnss3 libgbm1 libasound2t64 || sudo apt-get install -y libnss3 libgbm1 libasound2
 
     - name: Run Downloader
@@ -30,3 +29,11 @@ jobs:
         GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
         DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
       run: python main.py
+
+    # 💡 解凍された複数の動画が入ったoutputフォルダを、GitHub上にZIPとして自動保管します
+    - name: Upload Videos to GitHub
+      uses: actions/upload-artifact@v4
+      with:
+        name: videos
+        path: ./output/
+        retention-days: 1
