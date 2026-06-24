@@ -16,6 +16,10 @@ SAFIE_PW = os.environ.get('SAFIE_PW')
 DOWNLOAD_URL = os.environ.get('DOWNLOAD_URL')
 GAS_WEBHOOK_URL = os.environ.get('GAS_WEBHOOK_URL')
 
+# GitHubが公式に提供するダウンロードURLを構築するための環境変数
+GITHUB_RUN_ID = os.environ.get('GITHUB_RUN_ID')
+GITHUB_REPOSITORY = os.environ.get('GITHUB_REPOSITORY')
+
 if not DOWNLOAD_URL:
     print("❌ GASからのURLが引き渡されていません。")
     sys.exit(1)
@@ -74,42 +78,33 @@ try:
     if success:
         target_zip = list(download_dir.glob("*.zip"))[0]
         folder_name = target_zip.stem
-        local_extract_dir = Path("./extracted") / folder_name
-        local_extract_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 💡 動画ファイルを直接保存用フォルダ（/content/output）に隔離
+        output_dir = Path("./output")
+        output_dir.mkdir(exist_ok=True)
         
         print("🔓 ZIPファイルを解凍中...")
         with zipfile.ZipFile(target_zip, 'r') as zip_ref:
-            zip_ref.extractall(local_extract_dir)
-            
-        print("🚀 動画ファイルを一時保管庫へアップロードし、GASへ転送シグナルを送ります...")
-        for f in local_extract_dir.glob("*"):
-            if f.is_file():
-                dest_name = f"{folder_name}_{f.name}"
-                print(f"  ➔ 転送準備中: {dest_name}")
+            for file_info in zip_ref.infolist():
+                filename = os.path.basename(file_info.filename)
+                if not filename:
+                    continue
+                dest_name = f"{folder_name}_{filename}"
+                with zip_ref.open(file_info) as source, open(output_dir / dest_name, "wb") as target:
+                    target.write(source.read())
+                    
+        # 💡 GitHub公式のダウンロードリンクを生成
+        download_link = f"https://nightly.link/{GITHUB_REPOSITORY}/actions/runs/{GITHUB_RUN_ID}/videos.zip"
+        
+        if GAS_WEBHOOK_URL:
+            payload = {
+                "folder_name": folder_name,
+                "download_link": download_link
+            }
+            requests.post(GAS_WEBHOOK_URL, json=payload)
+            print(f"🌟 GASへの公式ダウンロードリンク送信完了: {download_link}")
                 
-                # 無料の一時ファイル転送サービス(bashupload)を利用して、GASがダウンロードできる直リンクを作ります
-                with open(f, 'rb') as file_data:
-                    upload_res = requests.put(f"https://bashupload.com/{dest_name}", data=file_data)
-                
-                # アップロード完了後に提供されるダウンロードURLを抽出
-                lines = upload_res.text.split('\n')
-                download_link = ""
-                for line in lines:
-                    if "wget" in line:
-                        download_link = line.split("wget ")[1].strip()
-                        break
-                
-                if download_link and GAS_WEBHOOK_URL:
-                    # GAS側の「動画受け取り口」へ、フォルダ名、ファイル名、動画リンクを送信
-                    payload = {
-                        "folder_name": folder_name,
-                        "file_name": dest_name,
-                        "download_link": download_link
-                    }
-                    requests.post(GAS_WEBHOOK_URL, json=payload)
-                    print(f"    🌟 GASへの引き渡しシグナル送信完了")
-                
-        print("✨ GitHub側の全処理が正常に終了しました！")
+        print("✨ main.py の処理が正常に終了しました。")
 
 except Exception as e:
     print(f"❌ エラー発生: {e}")
