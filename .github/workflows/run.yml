@@ -7,7 +7,7 @@ on:
   workflow_dispatch: # 手動で今すぐ動かしたい時のボタン
 
 jobs:
-  巡回チェック:
+  check_job: # 👈 日本語の「巡回チェック」から半角英数字の「check_job」に修正しました！
     runs-on: ubuntu-latest
     steps:
     - name: コードの読み込み
