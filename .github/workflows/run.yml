@@ -30,10 +30,20 @@ jobs:
         DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
       run: python main.py
 
-    # 💡 外部プラグインに頼らず、GitHub Actions標準の100%安全な機能で動画を一時保管します
+    # 1. 先に動画ZIPを完全にGitHub上に保存する（ここで確実に33MBのファイルが作られます）
     - name: Upload Videos to GitHub
       uses: actions/upload-artifact@v4
       with:
         name: videos
         path: ./output/
         retention-days: 1
+
+    # 2. 💡【ここを修正】保存が「100%完了した後」に、GASへフォルダ名を通知する
+    - name: Notify GAS
+      if: success()
+      run: |
+        # main.pyが残したフォルダ名を取得してGASへ送信
+        FOLDER_NAME=$(ls ./downloads | sed 's/\.zip//g' | head -n 1)
+        curl -X POST -H "Content-Type: application/json" \
+             -d "{\"status\":\"ready\",\"folder_name\":\"$FOLDER_NAME\"}" \
+             ${{ secrets.GAS_WEBHOOK_URL }}
