@@ -18,7 +18,7 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        pip install selenium google-api-python-client google-auth-httplib2 google-auth-oauthlib requests
+        pip install selenium requests
         sudo apt-get update
         sudo apt-get install -y libnss3 libgbm1 libasound2t64 || sudo apt-get install -y libnss3 libgbm1 libasound2
 
@@ -30,10 +30,11 @@ jobs:
         DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
       run: python main.py
 
-    # 💡 解凍された複数の動画が入ったoutputフォルダを、GitHub上にZIPとして自動保管します
-    - name: Upload Videos to GitHub
-      uses: actions/upload-artifact@v4
+    # 💡【ここを追加！】Googleの公式ツールを使って、解凍された動画フォルダを直接ドライブへ瞬時にアップロードします
+    - name: Upload to Google Drive
+      uses: adityass आजाद/google-drive-upload-git-action@v1
       with:
-        name: videos
-        path: ./output/
-        retention-days: 1
+        credentials: ${{ secrets.DRIVE_CREDENTIALS }} # 👈※後ほど設定します
+        filename: ./extracted/
+        folderId: '17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K' # 山下さんのフォルダID
+        overwrite: "true"
