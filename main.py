@@ -29,16 +29,28 @@ DRIVE_CREDENTIALS = os.environ.get('DRIVE_CREDENTIALS')
 # 山下さんのGoogleドライブ保存先フォルダID
 DRIVE_FOLDER_ID = "17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K"
 
-# Googleドライブ接続の初期化
+# ==============================================================================
+# Googleドライブ接続の初期化（Colabの鍵構造のズレを完全吸収する修正版）
+# ==============================================================================
 def get_drive_service():
     creds_data = json.loads(DRIVE_CREDENTIALS)
     
-    # Colabの認証データ構造（_token_uriや_refresh_token）をGoogleの公式規格に変換
-    token_uri = creds_data.get('_token_uri', 'https://oauth2.googleapis.com/token')
-    refresh_token = creds_data.get('_refresh_token')
-    client_id = creds_data.get('_client_id')
-    client_secret = creds_data.get('_client_secret')
+    # Colab特有のアンダースコア付きの名前から、公式規格の名前に完全変換します
+    token_uri = creds_data.get('_token_uri', creds_data.get('token_uri', 'https://oauth2.googleapis.com/token'))
+    refresh_token = creds_data.get('_refresh_token', creds_data.get('refresh_token'))
+    client_id = creds_data.get('_client_id', creds_data.get('client_id'))
+    client_secret = creds_data.get('_client_secret', creds_data.get('client_secret'))
     
+    # 万が一、データ階層の奥深くに隠れている場合のバックアップ救済処理
+    if not client_id and 'token_response' in creds_data:
+        try:
+            tr = creds_data.get('token_response', {})
+            if isinstance(tr, str): 
+                tr = json.loads(tr)
+            refresh_token = refresh_token or tr.get('refresh_token')
+        except: 
+            pass
+
     creds = Credentials(
         token=creds_data.get('token'),
         refresh_token=refresh_token,
@@ -48,40 +60,54 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
+# ==============================================================================
+# 1. Gmailから最新の個別ダウンロードURLを取得する関数
+# ==============================================================================
 def fetch_download_url():
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_USER, GMAIL_PASS)
         mail.select("inbox")
+        
+        # Safieからの未読メールを検索
         status, messages = mail.search(None, '(UNSEEN FROM "noreply@safie.jp")')
         if not messages[0]:
             mail.logout()
             return None
+            
         mail_ids = messages[0].split()
         latest_id = mail_ids[-1]
         status, data = mail.fetch(latest_id, "(RFC822)")
         raw_email = data[0][1]
         msg = email.message_from_bytes(raw_email)
+        
         body = ""
         if msg.is_multipart():
             for part in msg.walk():
                 if part.get_content_type() in ["text/html", "text/plain"]:
                     body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
-                    if "download/media" in body: break
+                    if "download/media" in body: 
+                        break
         else:
             body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            
         url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
         if url_match:
             download_url = url_match.group(0)
+            # 見つけたメールを既読にする
             mail.store(latest_id, '+FLAGS', '\\Seen')
             mail.logout()
             return download_url
+            
         mail.logout()
         return None
     except Exception as e:
         print(f"❌ Gmail処理エラー: {e}")
         return None
 
+# ==============================================================================
+# 2. Seleniumで自動ログインしてダウンロードを開始する関数
+# ==============================================================================
 def login_and_download(download_url):
     options = Options()
     options.add_argument('--headless')
@@ -89,44 +115,66 @@ def login_and_download(download_url):
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-gpu')
+    
     download_dir = Path("./downloads")
     download_dir.mkdir(exist_ok=True)
-    prefs = {"download.default_directory": str(download_dir.resolve()), "download.prompt_for_download": False}
+    
+    prefs = {
+        "download.default_directory": str(download_dir.resolve()), 
+        "download.prompt_for_download": False
+    }
     options.add_experimental_option("prefs", prefs)
     driver = webdriver.Chrome(options=options)
     is_success = False
+    
     try:
         driver.get(download_url)
         wait = WebDriverWait(driver, 15)
+        
         id_xpath = "//sf-login-page//sf-login//form/div[2]/div[2]//input"
         pw_xpath = "//sf-login-page//sf-login//form/div[2]/div[4]//input"
+        
         wait.until(EC.element_to_be_clickable((By.XPATH, id_xpath))).send_keys(SAFIE_ID)
         driver.find_element(By.XPATH, pw_xpath).send_keys(SAFIE_PW)
+        
         login_btn = "//sf-login-page//sf-login//form/div[2]/div[6]//sf-button-v1/div"
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, login_btn))))
+        
+        # ダウンロード開始を少し待つ
         time.sleep(15)
+        
+        # 完了監視ループ（最大5分）
         timeout = 0
         while timeout < 300:
             crdownloads = list(download_dir.glob("*.crdownload"))
             zip_files = list(download_dir.glob("*.zip"))
             if not crdownloads and zip_files:
                 is_success = True
+                print("✅ SafieからのZIPダウンロードが100%完了しました。")
                 break
             time.sleep(3)
             timeout += 3
+            
     except Exception as e:
-        print(f"❌ ブラウザエラー: {e}")
+        print(f"❌ ブラウザ自動操作エラー: {e}")
     finally:
         driver.quit()
     return is_success
 
+# ==============================================================================
+# 3. Googleドライブへ直接フォルダを作成し、解凍しながらダイレクト転送する関数
+# ==============================================================================
 def upload_to_drive():
     download_dir = Path("./downloads")
     zip_files = list(download_dir.glob("*.zip"))
-    if not zip_files: return
+    if not zip_files: 
+        print("❌ アップロード対象のZIPファイルが見つかりません。")
+        return
+        
     target_zip = zip_files[0]
     folder_name = target_zip.stem
     
+    # ドライブ接続を確立
     drive_service = get_drive_service()
     
     # Googleドライブ上に動画名で新規フォルダを作成
@@ -144,6 +192,7 @@ def upload_to_drive():
     with zipfile.ZipFile(target_zip, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
             filename = os.path.basename(file_info.filename)
+            # 不要なシステムゴミデータや空ファイルはスキップ
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
             
@@ -157,11 +206,15 @@ def upload_to_drive():
             }
             drive_service.files().create(body=video_metadata, media_body=media, fields='id').execute()
             
-    print("✨ 【大成功】すべての動画がGoogleドライブへ直接書き込まれました！")
+    print("✨ 【大大成功】すべての動画がGoogleドライブへ正常に書き込まれました！")
 
+# ==============================================================================
+# メイン実行ルーチン
+# ==============================================================================
 if __name__ == "__main__":
     print("🔍 Gmailの未読通知メールをスキャン中...")
     target_url = fetch_download_url()
+    
     if target_url:
         print(f"🎯 新着動画通知を発見しました。URL: {target_url}")
         if login_and_download(target_url):
