@@ -1,11 +1,9 @@
 import os
 import sys
 import time
-import zipfile
 import requests
 from pathlib import Path
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -15,10 +13,6 @@ SAFIE_ID = os.environ.get('SAFIE_ID')
 SAFIE_PW = os.environ.get('SAFIE_PW')
 DOWNLOAD_URL = os.environ.get('DOWNLOAD_URL')
 GAS_WEBHOOK_URL = os.environ.get('GAS_WEBHOOK_URL')
-
-# GitHub公式のダウンロードURLを構築するための環境変数
-GITHUB_RUN_ID = os.environ.get('GITHUB_RUN_ID')
-GITHUB_REPOSITORY = os.environ.get('GITHUB_REPOSITORY')
 
 if not DOWNLOAD_URL:
     print("❌ GASからのURLが引き渡されていません。")
@@ -75,32 +69,28 @@ try:
         target_zip = list(download_dir.glob("*.zip"))[0]
         folder_name = target_zip.stem
         
-        # 💡 動画ファイルを直接保存用フォルダ（/output）に隔離（GitHub上でZIP化するため）
+        # 💡 動画ファイルを一時隔離（GitHubが自動で固めてアップロードしてくれます）
         output_dir = Path("./output")
         output_dir.mkdir(exist_ok=True)
         
-        print("🔓 ZIPファイルを解凍中...")
+        import zipfile
         with zipfile.ZipFile(target_zip, 'r') as zip_ref:
             for file_info in zip_ref.infolist():
                 filename = os.path.basename(file_info.filename)
-                if not filename:
-                    continue
-                # GAS側で処理しやすいよう、ファイル名に動画名をしっかり維持
-                with zip_ref.open(file_info) as source, open(output_dir / filename, "wb") as target:
-                    target.write(source.read())
-                    
-        # 💡 Public化されたGitHub公式のダウンロードリンクを生成
-        download_link = f"https://nightly.link/{GITHUB_REPOSITORY}/actions/runs/{GITHUB_RUN_ID}/videos.zip"
+                if filename:
+                    with zip_ref.open(file_info) as source, open(output_dir / filename, "wb") as target:
+                        target.write(source.read())
+                        
+        print(f"✅ 動画の抽出完了（フォルダ名: {folder_name}）")
         
+        # 💡 GASへ「ダウンロードが終わったよ！」という合図とフォルダ名だけを送信
         if GAS_WEBHOOK_URL:
             payload = {
-                "folder_name": folder_name,
-                "download_link": download_link
+                "status": "ready",
+                "folder_name": folder_name
             }
             requests.post(GAS_WEBHOOK_URL, json=payload)
-            print(f"🌟 GASへPublicダウンロードリンクを送信しました: {download_link}")
-                
-        print("✨ main.py の処理が正常に終了しました。")
+            print("🚀 GASへダウンロード完了の合図を送りました。")
 
 except Exception as e:
     print(f"❌ エラー発生: {e}")
