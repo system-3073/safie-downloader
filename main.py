@@ -73,6 +73,7 @@ try:
         output_dir = Path("./output")
         output_dir.mkdir(exist_ok=True)
         
+        # （main.pyの上のほうはそのままです。最後の部分だけこのように綺麗にします）
         import zipfile
         with zipfile.ZipFile(target_zip, 'r') as zip_ref:
             for file_info in zip_ref.infolist():
@@ -82,15 +83,7 @@ try:
                         target.write(source.read())
                         
         print(f"✅ 動画の抽出完了（フォルダ名: {folder_name}）")
-        
-        # 💡 GASへ「ダウンロードが終わったよ！」という合図とフォルダ名だけを送信
-        if GAS_WEBHOOK_URL:
-            payload = {
-                "status": "ready",
-                "folder_name": folder_name
-            }
-            requests.post(GAS_WEBHOOK_URL, json=payload)
-            print("🚀 GASへダウンロード完了の合図を送りました。")
+        print("✨ main.py の処理がすべて正常に終了しました。")
 
 except Exception as e:
     print(f"❌ エラー発生: {e}")
