@@ -30,11 +30,10 @@ jobs:
         DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
       run: python main.py
 
-    # 💡【ここを追加！】Googleの公式ツールを使って、解凍された動画フォルダを直接ドライブへ瞬時にアップロードします
-    - name: Upload to Google Drive
-      uses: adityass आजाद/google-drive-upload-git-action@v1
+    # 💡 GitHubの標準機能（Artifacts）を使って、/outputの中身を綺麗に固めます
+    - name: Upload Videos to GitHub
+      uses: actions/upload-artifact@v4
       with:
-        credentials: ${{ secrets.DRIVE_CREDENTIALS }} # 👈※後ほど設定します
-        filename: ./extracted/
-        folderId: '17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K' # 山下さんのフォルダID
-        overwrite: "true"
+        name: videos
+        path: ./output/
+        retention-days: 1
