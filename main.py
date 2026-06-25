@@ -31,8 +31,21 @@ DRIVE_FOLDER_ID = "17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K"
 
 # Googleドライブ接続の初期化
 def get_drive_service():
-    creds_json = json.loads(DRIVE_CREDENTIALS)
-    creds = Credentials.from_authorized_user_info(creds_json)
+    creds_data = json.loads(DRIVE_CREDENTIALS)
+    
+    # Colabの認証データ構造（_token_uriや_refresh_token）をGoogleの公式規格に変換
+    token_uri = creds_data.get('_token_uri', 'https://oauth2.googleapis.com/token')
+    refresh_token = creds_data.get('_refresh_token')
+    client_id = creds_data.get('_client_id')
+    client_secret = creds_data.get('_client_secret')
+    
+    creds = Credentials(
+        token=creds_data.get('token'),
+        refresh_token=refresh_token,
+        token_uri=token_uri,
+        client_id=client_id,
+        client_secret=client_secret
+    )
     return build('drive', 'v3', credentials=creds)
 
 def fetch_download_url():
@@ -116,7 +129,7 @@ def upload_to_drive():
     
     drive_service = get_drive_service()
     
-    # 💡 Googleドライブ上に動画名で新規フォルダを作成
+    # Googleドライブ上に動画名で新規フォルダを作成
     file_metadata = {
         'name': folder_name,
         'mimeType': 'application/vnd.google-apps.folder',
