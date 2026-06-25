@@ -30,6 +30,5 @@ jobs:
         GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
         SAFIE_ID: ${{ secrets.SAFIE_ID }}
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
-        # 💡 先ほどColabから抽出したGoogleドライブの合鍵をここに適用
         DRIVE_CREDENTIALS: ${{ secrets.DRIVE_CREDENTIALS }}
       run: python main.py
