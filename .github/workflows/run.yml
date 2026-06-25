@@ -30,10 +30,11 @@ jobs:
         DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
       run: python main.py
 
-    # 💡 GitHubの標準機能（Artifacts）を使って、/outputの中身を綺麗に固めます
-    - name: Upload Videos to GitHub
-      uses: actions/upload-artifact@v4
+    # 💡【ここが最終兵器】外部サイトを一切挟まず、Google公式ツールで動画フォルダをドライブへ直接アップロードします！
+    - name: Upload to Google Drive
+      uses: Jvshv/google-drive-upload-git-action@v1.1.0
       with:
-        name: videos
-        path: ./output/
-        retention-days: 1
+        credentials: ${{ secrets.DRIVE_CREDENTIALS }} # 👈手順2で設定する金庫の鍵
+        filename: ./output/
+        folderId: '17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K' # 山下さんのフォルダID
+        overwrite: "true"
