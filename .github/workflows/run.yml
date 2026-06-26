@@ -2,7 +2,7 @@ name: Safie Auto Downloader (rclone Mount Version)
 
 on:
   schedule:
-    - cron: '*/10 * * * *' # 10分ごとに自動起動
+    - cron: '*/5 * * * *' # 5分ごとに自動起動
   workflow_dispatch: # 手動起動ボタン
 
 jobs:
