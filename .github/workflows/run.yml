@@ -1,9 +1,10 @@
-name: Safie Auto Downloader (rclone Mount Version)
+name: Safie Auto Downloader (GAS Triggered Version)
 
+# 💡 10分おきの定期実行(schedule)を廃止し、外部（GAS）からの信号(repository_dispatch)で動くようにします
 on:
-  schedule:
-    - cron: '*/10 * * * *' # 10分ごとに自動起動
-  workflow_dispatch: # 手動起動ボタン
+  repository_dispatch:
+    types: [trigger_safie_download]
+  workflow_dispatch: # 手動起動ボタン（残しておきます）
 
 jobs:
   check_job:
@@ -23,7 +24,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libnss3 libgbm1 libasound2t64 || sudo apt-get install -y libnss3 libgbm1 libasound2
 
-    - name: rclone（マウントツール）のインストールと設定
+    - name: rcloneのインストールと設定
       run: |
         sudo curl https://rclone.org/install.sh | sudo bash
         mkdir -p ~/.config/rclone
@@ -34,14 +35,7 @@ jobs:
         root_folder_id = 17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K
         EOF
 
-    - name: Googleドライブをシステムにマウント
-      run: |
-        mkdir -p /home/runner/googledrive
-        rclone mount gdrive: /home/runner/googledrive --vfs-cache-mode writes --rc --rc-no-auth &
-        sleep 5
-        ls -la /home/runner/googledrive
-
-    - name: 巡回プログラムの実行
+    - name: 巡回プログラムの実行（ローカルへの動画展開）
       env:
         GMAIL_USER: ${{ secrets.GMAIL_USER }}
         GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
@@ -49,20 +43,12 @@ jobs:
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
       run: python main.py
 
-    - name: Googleドライブへの転送完了を200%保証する（動的監視）
+    - name: Googleドライブへ確実・同期アップロード（100%同期待機）
       run: |
-        echo "⏳ キャッシュに残っているアップロード待ちファイルをスキャン中..."
-        timeout=0
-        while [ $timeout -lt 300 ]; do
-          unbacked_files=$(rclone rc --rc-no-auth vfs/status 2>/dev/null | json_pp | grep -A 1 '"unbacked_files"' | tail -n 1 | tr -d ' ,')
-          if [ -z "$unbacked_files" ] || [ "$unbacked_files" -eq 0 ]; then
-            echo "✨ クラウドへの完全同期を確認しました！安全に終了します。"
-            break
-          fi
-          echo "🔄 まだ $unbacked_files 本のファイルをアップロード中です。10秒後に再確認します... (経過: ${timeout}秒)"
-          sleep 10
-          timeout=$((timeout + 10))
-        done
-        rclone rc --rc-no-auth vfs/forget || true
-        sync
-        sleep 5
+        if [ -d "/home/runner/upload_staging" ] && [ "$(ls -A /home/runner/upload_staging)" ]; then
+          echo "🚀 ローカルに展開された動画を発見しました。Googleドライブへ確実に同期転送します..."
+          rclone copy /home/runner/upload_staging gdrive: --verbose
+          echo "✨ すべてのフォルダと動画のクラウド同期が200%完了しました！"
+        else
+          echo "📭 アップロード対象の動画はありませんでした。"
+        fi
