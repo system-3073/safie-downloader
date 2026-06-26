@@ -20,25 +20,29 @@ SAFIE_PW = os.environ.get('SAFIE_PW')
 # Googleドライブ上の保存先パス（マウント先）
 DRIVE_TARGET_PATH = Path("/home/runner/googledrive")
 
-# ==============================================================================
-# 1. Gmailから「すべての未読通知メール」のURLをリストで取得する関数
-# ==============================================================================
 def fetch_all_download_urls():
     urls_with_ids = []
+    mail = None
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        print("🔓 Gmailサーバーへ接続を試みています...")
+        # socketのデフォルトタイムアウトを15秒に設定（フリーズ防止）
+        import socket
+        socket.setdefaulttimeout(15)
+        
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
         mail.login(GMAIL_USER, GMAIL_PASS)
         mail.select("inbox")
         
-        # Safieからの未読メールをすべて検索
         status, messages = mail.search(None, '(UNSEEN FROM "noreply@safie.jp")')
         if not messages[0]:
-            mail.logout()
-            return urls_with_ids
+            print("📭 新しい未読通知メールはありませんでした。")
+            try: mail.logout()
+            except: pass
+            return []
             
         mail_ids = messages[0].split()
+        print(f"📩 未読メールを {len(mail_ids)} 通検知しました。解析中...")
         
-        # 見つかった未読メールを1通ずつ解析
         for m_id in mail_ids:
             status, data = mail.fetch(m_id, "(RFC822)")
             raw_email = data[0][1]
@@ -55,23 +59,24 @@ def fetch_all_download_urls():
                 
             url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
             if url_match:
-                # 後で既読化するために、URLとメールIDをセットで記録
-                urls_with_ids.append({"url": url_match.group(0), "id": m_id, "client": mail})
+                urls_with_ids.append({"url": url_match.group(0), "id": m_id})
                 
-        # 💡 メールセッションは維持したまま一度リストを返します
+        try: mail.logout()
+        except: pass
         return urls_with_ids
     except Exception as e:
-        print(f"❌ Gmail処理エラー: {e}")
+        print(f"❌ Gmail処理で例外が発生しました: {e}")
+        if mail:
+            try: mail.logout()
+            except: pass
         return []
 
-# ==============================================================================
-# 2. Seleniumで自動ログインしてダウンロードを開始する関数
-# ==============================================================================
 def login_and_download(download_url):
-    # 毎回保存先を綺麗にするため、前回の残骸があれば削除して再作成
     download_dir = Path("./downloads")
     if download_dir.exists():
-        for f in download_dir.glob("*"): f.unlink()
+        for f in download_dir.glob("*"): 
+            try: f.unlink()
+            except: pass
     download_dir.mkdir(exist_ok=True)
 
     options = Options()
@@ -83,22 +88,32 @@ def login_and_download(download_url):
     
     prefs = {"download.default_directory": str(download_dir.resolve()), "download.prompt_for_download": False}
     options.add_experimental_option("prefs", prefs)
+    
+    print("🌐 ヘッドレスChromeを起動中...")
     driver = webdriver.Chrome(options=options)
+    # ブラウザ全体の通信タイムアウトを15秒に設定
+    driver.set_page_load_timeout(15)
     is_success = False
     
     try:
+        print(f"🔗 SafieダウンロードURLへアクセス中: {download_url}")
         driver.get(download_url)
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 10) # 最大10秒待機
+        
         id_xpath = "//sf-login-page//sf-login//form/div[2]/div[2]//input"
         pw_xpath = "//sf-login-page//sf-login//form/div[2]/div[4]//input"
+        
+        print("📝 ログイン情報を入力中...")
         wait.until(EC.element_to_be_clickable((By.XPATH, id_xpath))).send_keys(SAFIE_ID)
         driver.find_element(By.XPATH, pw_xpath).send_keys(SAFIE_PW)
+        
         login_btn = "//sf-login-page//sf-login//form/div[2]/div[6]//sf-button-v1/div"
+        print("🔘 ログインボタンをクリックします。")
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, login_btn))))
         
-        time.sleep(15)
+        print("⏳ ダウンロードの開始と完了を監視しています（最大3分）...")
         timeout = 0
-        while timeout < 300:
+        while timeout < 180:
             crdownloads = list(download_dir.glob("*.crdownload"))
             zip_files = list(download_dir.glob("*.zip"))
             if not crdownloads and zip_files:
@@ -107,15 +122,15 @@ def login_and_download(download_url):
                 break
             time.sleep(3)
             timeout += 3
+        if not is_success:
+            print("⚠️ タイムアウトまでにダウンロードが完了しませんでした。")
     except Exception as e:
         print(f"❌ ブラウザ自動操作エラー: {e}")
     finally:
-        driver.quit()
+        try: driver.quit()
+        except: pass
     return is_success
 
-# ==============================================================================
-# 3. マウントされたGoogleドライブフォルダへ保存する関数
-# ==============================================================================
 def save_to_mounted_drive():
     download_dir = Path("./downloads")
     zip_files = list(download_dir.glob("*.zip"))
@@ -135,16 +150,22 @@ def save_to_mounted_drive():
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
             
-            print(f"🚀 マウント経由で指定フォルダへ直接転送中: {filename}")
+            # 重複回避ロジック（枝番付与）
+            final_path = output_folder / filename
+            base, ext = os.path.splitext(filename)
+            counter = 1
+            while final_path.exists():
+                final_path = output_folder / f"{base}_{counter}{ext}"
+                counter += 1
+                
+            print(f"🚀 マウント経由で指定フォルダへ直接転送中: {final_path.name}")
             file_data = zip_ref.read(file_info.filename)
-            with open(output_folder / filename, 'wb') as f:
+            with open(final_path, 'wb') as f:
                 f.write(file_data)
     return True
 
-# ==============================================================================
-# メイン実行ルーチン（一括ループ処理）
-# ==============================================================================
 if __name__ == "__main__":
+    print("🚀 巡回プログラムを起動しました。マウント状態をチェック中...")
     if not DRIVE_TARGET_PATH.exists():
         print(f"❌ Googleドライブフォルダが正常にマウントされていません: {DRIVE_TARGET_PATH}")
         sys.exit(1)
@@ -155,22 +176,28 @@ if __name__ == "__main__":
     if target_emails:
         print(f"🎯 合計 {len(target_emails)} 通の新着動画通知を発見しました。順次処理を開始します。")
         
-        # 💡 見つかった未読メールの数だけループを回して連続処理します
-        for idx, email_item in enumerate(target_emails, 1):
-            print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
-            print(f"🔗 URL: {email_item['url']}")
+        # 既読化のために再度ログイン
+        mail_client = None
+        try:
+            mail_client = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
+            mail_client.login(GMAIL_USER, GMAIL_PASS)
+            mail_client.select("inbox")
             
-            if login_and_download(email_item['url']):
-                if save_to_mounted_drive():
-                    # ドライブへの転送が成功したメールだけをピンポイントで「既読」にする
-                    email_item['client'].store(email_item['id'], '+FLAGS', '\\Seen')
-                    print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
-            
-            # 連続アクセスによるSafie側のブロックを防ぐため、少し休憩
-            time.sleep(5)
-            
-        # 最後に一括してGmailをログアウト
-        target_emails[0]['client'].logout()
-        print("\n✨ 【すべての新着動画】の一括転送処理が完了しました！")
+            for idx, email_item in enumerate(target_emails, 1):
+                print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
+                if login_and_download(email_item['url']):
+                    if save_to_mounted_drive():
+                        mail_client.store(email_item['id'], '+FLAGS', '\\Seen')
+                        print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
+                time.sleep(3)
+                
+            mail_client.logout()
+            print("\n✨ 【すべての新着動画】の一括転送処理が完了しました！")
+        except Exception as loop_err:
+            print(f"❌ 一括処理ループ全体でエラーが発生しました: {loop_err}")
+            if mail_client:
+                try: mail_client.logout()
+                except: pass
     else:
-        print("📭 新しい未読通知メールはありませんでした。")
+        # 未読がなくても正常終了させる
+        pass
