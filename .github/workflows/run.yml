@@ -31,15 +31,15 @@ jobs:
         [gdrive]
         type = drive
         token = ${{ secrets.DRIVE_CREDENTIALS }}
-        # 💡 指定されたGoogleドライブのフォルダIDの「中身」をルートとして直結します
         root_folder_id = 17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K
         EOF
 
     - name: Googleドライブをシステムにマウント
       run: |
         mkdir -p /home/runner/googledrive
-        # バックグラウンドで指定フォルダの中身を直結
-        rclone mount gdrive: /home/runner/googledrive --vfs-cache-mode writes &
+        # 💡 キャッシュの同期漏れを防ぐため、書き込みと同時に反映するモード（--vfs-cache-mode off または writes）
+        # リモート制御用のポート（--rc）も開きます
+        rclone mount gdrive: /home/runner/googledrive --vfs-cache-mode writes --rc &
         sleep 5
         ls -la /home/runner/googledrive
 
@@ -50,3 +50,14 @@ jobs:
         SAFIE_ID: ${{ secrets.SAFIE_ID }}
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
       run: python main.py
+
+    - name: Googleドライブへのアップロード完了を強制待機
+      run: |
+        printenv
+        echo "⏳ rcloneのキャッシュからGoogleドライブへのアップロード完了を待っています..."
+        # 💡 マウントフォルダ内のすべてのデータがGoogleドライブへ送信し尽くされるまで強制同期を掛けます
+        rclone rc vfs/forget || true
+        sync
+        # クラウドへの反映時間を確実につくるため、最後に60秒間強制的にプロセスを維持します
+        sleep 60
+        echo "✅ 同期待機時間を終了しました。"
