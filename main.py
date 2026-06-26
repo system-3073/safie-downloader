@@ -17,9 +17,9 @@ GMAIL_PASS = os.environ.get('GMAIL_PASS')
 SAFIE_ID = os.environ.get('SAFIE_ID')
 SAFIE_PW = os.environ.get('SAFIE_PW')
 
-# 💡 Googleドライブ上の実際の保存先パス（マウント先）
-# ※GWS上のフォルダ名が「【カメラ録画】テストフォルダ」である前提です
-DRIVE_TARGET_PATH = Path("/home/runner/googledrive/【カメラ録画】テストフォルダ")
+# 💡 rcloneによって「指定フォルダの内部」が直接マウントされているため、
+# このパスの直下に新しい動画用フォルダを作れば、自動的に目的のドライブURL内に反映されます。
+DRIVE_TARGET_PATH = Path("/home/runner/googledrive")
 
 def fetch_download_url():
     try:
@@ -104,28 +104,28 @@ def save_to_mounted_drive():
     target_zip = zip_files[0]
     folder_name = target_zip.stem
     
-    # Googleドライブ（マウント先）に動画用の新規フォルダを作成
+    # マウントされたGoogleドライブフォルダの直下に、動画日付の新規フォルダを作成
     output_folder = DRIVE_TARGET_PATH / folder_name
     output_folder.mkdir(parents=True, exist_ok=True)
-    print(f"🔓 マウント先のドライブ内にフォルダを作成しました: {output_folder}")
+    print(f"🔓 指定フォルダ内に動画保存用フォルダを作成しました: {output_folder}")
     
-    # ZIPを普通にシステム上で解凍して、作成したフォルダへ直接配置
+    # ZIPをシステム上で展開して、作成したフォルダへ直接配置
     with zipfile.ZipFile(target_zip, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
             filename = os.path.basename(file_info.filename)
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
             
-            print(f"🚀 マウント経由でドライブへ転送中: {filename}")
+            print(f"🚀 マウント経由で指定フォルダへ直接転送中: {filename}")
             file_data = zip_ref.read(file_info.filename)
             with open(output_folder / filename, 'wb') as f:
                 f.write(file_data)
                 
-    print("✨ 【超大成功】rcloneマウント経由で、すべての動画がGoogleドライブへ直接書き込まれました！")
+    print("✨ 【超大成功】rcloneマウント経由で、すべての動画が指定されたGoogleドライブURL内へ直接書き込まれました！")
 
 if __name__ == "__main__":
-    if not DRIVE_TARGET_PATH.parent.exists():
-        print(f"❌ Googleドライブが正常にマウントされていないか、パスが間違っています: {DRIVE_TARGET_PATH}")
+    if not DRIVE_TARGET_PATH.exists():
+        print(f"❌ Googleドライブフォルダが正常にマウントされていません: {DRIVE_TARGET_PATH}")
         sys.exit(1)
 
     print("🔍 Gmailの未読通知メールをスキャン中...")
