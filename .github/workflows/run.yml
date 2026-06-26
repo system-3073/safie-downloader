@@ -1,13 +1,12 @@
-name: Safie Auto Downloader (Colab Migration)
+name: Safie Auto Downloader (rclone Mount Version)
 
 on:
   schedule:
-    # 💡 10分ごとに自動で裏パソコンを起動してGmailをチェックする設定
-    - cron: '*/10 * * * *'
-  workflow_dispatch: # 手動で今すぐ動かしたい時のボタン
+    - cron: '*/5 * * * *' # 💡5分ごとに自動起動
+  workflow_dispatch: # 手動起動ボタン
 
 jobs:
-  check_job: # 👈 日本語の「巡回チェック」から半角英数字の「check_job」に修正しました
+  check_job:
     runs-on: ubuntu-latest
     steps:
     - name: コードの読み込み
@@ -20,9 +19,27 @@ jobs:
 
     - name: 依存ライブラリのインストール
       run: |
-        pip install selenium requests google-api-python-client google-auth-httplib2 google-auth-oauthlib
+        pip install selenium requests
         sudo apt-get update
         sudo apt-get install -y libnss3 libgbm1 libasound2t64 || sudo apt-get install -y libnss3 libgbm1 libasound2
+
+    - name: rclone（マウントツール）のインストールと設定
+      run: |
+        sudo curl https://rclone.org/install.sh | sudo bash
+        mkdir -p ~/.config/rclone
+        cat << EOF > ~/.config/rclone/rclone.conf
+        [gdrive]
+        type = drive
+        token = ${{ secrets.DRIVE_CREDENTIALS }}
+        EOF
+
+    - name: Googleドライブをシステムにマウント
+      run: |
+        mkdir -p /home/runner/googledrive
+        # バックグラウンドでGoogleドライブをフォルダとして直結
+        rclone mount gdrive: /home/runner/googledrive --vfs-cache-mode writes &
+        sleep 5
+        ls -la /home/runner/googledrive
 
     - name: 巡回プログラムの実行
       env:
@@ -30,5 +47,4 @@ jobs:
         GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
         SAFIE_ID: ${{ secrets.SAFIE_ID }}
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
-        DRIVE_CREDENTIALS: ${{ secrets.DRIVE_CREDENTIALS }}
       run: python main.py
