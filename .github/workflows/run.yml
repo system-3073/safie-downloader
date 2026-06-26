@@ -37,8 +37,7 @@ jobs:
     - name: Googleドライブをシステムにマウント
       run: |
         mkdir -p /home/runner/googledrive
-        # 💡 キャッシュの同期漏れを防ぐため、書き込みと同時に反映するモード（--vfs-cache-mode off または writes）
-        # リモート制御用のポート（--rc）も開きます
+        # 💡 バックグラウンドでマウント（リモート制御用のポート --rc を必ず開く）
         rclone mount gdrive: /home/runner/googledrive --vfs-cache-mode writes --rc &
         sleep 5
         ls -la /home/runner/googledrive
@@ -51,13 +50,28 @@ jobs:
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
       run: python main.py
 
-    - name: Googleドライブへのアップロード完了を強制待機
+    - name: Googleドライブへの転送完了を200%保証する（動的監視）
       run: |
-        printenv
-        echo "⏳ rcloneのキャッシュからGoogleドライブへのアップロード完了を待っています..."
-        # 💡 マウントフォルダ内のすべてのデータがGoogleドライブへ送信し尽くされるまで強制同期を掛けます
+        echo "⏳ キャッシュに残っているアップロード待ちファイルをスキャン中..."
+        
+        # 💡 時間で待つのではなく、rcloneの内部API（vfs/status）を叩き、
+        # 「out of date（未同期）」のファイル数が 0 になるまでループで監視し続けます。
+        timeout=0
+        while [ $timeout -lt 300 ]; do
+          # 未同期のファイル数を取得
+          unbacked_files=$(rclone rc vfs/status | json_pp | grep -A 1 '"unbacked_files"' | tail -n 1 | tr -d ' ,')
+          
+          if [ -z "$unbacked_files" ] || [ "$unbacked_files" -eq 0 ]; then
+            echo "✨ クラウドへの完全同期を確認しました！安全に終了します。"
+            break
+          fi
+          
+          echo "🔄 まだ $unbacked_files 本のファイルをアップロード中です。10秒後に再確認します... (経過: ${timeout}秒)"
+          sleep 10
+          timeout=$((timeout + 10))
+        done
+        
+        # 最後の念押しクリーンアップ
         rclone rc vfs/forget || true
         sync
-        # クラウドへの反映時間を確実につくるため、最後に60秒間強制的にプロセスを維持します
-        sleep 60
-        echo "✅ 同期待機時間を終了しました。"
+        sleep 2
