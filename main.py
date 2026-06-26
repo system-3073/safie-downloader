@@ -25,7 +25,6 @@ def fetch_all_download_urls():
     mail = None
     try:
         print("🔓 Gmailサーバーへ接続を試みています...")
-        # socketのデフォルトタイムアウトを15秒に設定（フリーズ防止）
         import socket
         socket.setdefaulttimeout(15)
         
@@ -59,7 +58,14 @@ def fetch_all_download_urls():
                 
             url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
             if url_match:
-                urls_with_ids.append({"url": url_match.group(0), "id": m_id})
+                url = url_match.group(0)
+                # 💡 URLから mediaid=XXXXXX の数字を抽出してフォルダ名の識別に使います
+                media_id = "unknown"
+                media_id_match = re.search(r'mediaid=(\d+)', url)
+                if media_id_match:
+                    media_id = media_id_match.group(1)
+                
+                urls_with_ids.append({"url": url, "id": m_id, "media_id": media_id})
                 
         try: mail.logout()
         except: pass
@@ -89,29 +95,24 @@ def login_and_download(download_url):
     prefs = {"download.default_directory": str(download_dir.resolve()), "download.prompt_for_download": False}
     options.add_experimental_option("prefs", prefs)
     
-    print("🌐 ヘッドレスChromeを起動中...")
     driver = webdriver.Chrome(options=options)
-    # ブラウザ全体の通信タイムアウトを15秒に設定
     driver.set_page_load_timeout(15)
     is_success = False
     
     try:
         print(f"🔗 SafieダウンロードURLへアクセス中: {download_url}")
         driver.get(download_url)
-        wait = WebDriverWait(driver, 10) # 最大10秒待機
+        wait = WebDriverWait(driver, 10)
         
         id_xpath = "//sf-login-page//sf-login//form/div[2]/div[2]//input"
         pw_xpath = "//sf-login-page//sf-login//form/div[2]/div[4]//input"
         
-        print("📝 ログイン情報を入力中...")
         wait.until(EC.element_to_be_clickable((By.XPATH, id_xpath))).send_keys(SAFIE_ID)
         driver.find_element(By.XPATH, pw_xpath).send_keys(SAFIE_PW)
         
         login_btn = "//sf-login-page//sf-login//form/div[2]/div[6]//sf-button-v1/div"
-        print("🔘 ログインボタンをクリックします。")
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, login_btn))))
         
-        print("⏳ ダウンロードの開始と完了を監視しています（最大3分）...")
         timeout = 0
         while timeout < 180:
             crdownloads = list(download_dir.glob("*.crdownload"))
@@ -122,8 +123,6 @@ def login_and_download(download_url):
                 break
             time.sleep(3)
             timeout += 3
-        if not is_success:
-            print("⚠️ タイムアウトまでにダウンロードが完了しませんでした。")
     except Exception as e:
         print(f"❌ ブラウザ自動操作エラー: {e}")
     finally:
@@ -131,7 +130,7 @@ def login_and_download(download_url):
         except: pass
     return is_success
 
-def save_to_mounted_drive():
+def save_to_mounted_drive(media_id):
     download_dir = Path("./downloads")
     zip_files = list(download_dir.glob("*.zip"))
     if not zip_files: 
@@ -139,25 +138,19 @@ def save_to_mounted_drive():
         return False
         
     target_zip = zip_files[0]
-    folder_name = target_zip.stem
+    # 💡 フォルダ名の末尾に固有のmedia_idを付与して、フォルダの重複自体を完全に防ぎます
+    folder_name = f"{target_zip.stem}_{media_id}"
     output_folder = DRIVE_TARGET_PATH / folder_name
     output_folder.mkdir(parents=True, exist_ok=True)
-    print(f"🔓 指定フォルダ内に動画保存用フォルダを作成しました: {output_folder}")
+    print(f"🔓 指定フォルダ内に独立した動画保存用フォルダを作成しました: {output_folder}")
     
     with zipfile.ZipFile(target_zip, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
             filename = os.path.basename(file_info.filename)
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
-            
-            # 重複回避ロジック（枝番付与）
-            final_path = output_folder / filename
-            base, ext = os.path.splitext(filename)
-            counter = 1
-            while final_path.exists():
-                final_path = output_folder / f"{base}_{counter}{ext}"
-                counter += 1
                 
+            final_path = output_folder / filename
             print(f"🚀 マウント経由で指定フォルダへ直接転送中: {final_path.name}")
             file_data = zip_ref.read(file_info.filename)
             with open(final_path, 'wb') as f:
@@ -176,7 +169,6 @@ if __name__ == "__main__":
     if target_emails:
         print(f"🎯 合計 {len(target_emails)} 通の新着動画通知を発見しました。順次処理を開始します。")
         
-        # 既読化のために再度ログイン
         mail_client = None
         try:
             mail_client = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
@@ -186,7 +178,8 @@ if __name__ == "__main__":
             for idx, email_item in enumerate(target_emails, 1):
                 print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
                 if login_and_download(email_item['url']):
-                    if save_to_mounted_drive():
+                    # 💡 メディアIDを渡して、フォルダを完全に分離して保存
+                    if save_to_mounted_drive(email_item['media_id']):
                         mail_client.store(email_item['id'], '+FLAGS', '\\Seen')
                         print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
                 time.sleep(3)
@@ -199,5 +192,4 @@ if __name__ == "__main__":
                 try: mail_client.logout()
                 except: pass
     else:
-        # 未読がなくても正常終了させる
         pass
