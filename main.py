@@ -17,8 +17,8 @@ GMAIL_PASS = os.environ.get('GMAIL_PASS')
 SAFIE_ID = os.environ.get('SAFIE_ID')
 SAFIE_PW = os.environ.get('SAFIE_PW')
 
-# Googleドライブ上の保存先パス（マウント先）
-DRIVE_TARGET_PATH = Path("/home/runner/googledrive")
+# 💡 安全な一時ローカルフォルダに保存させます
+DRIVE_TARGET_PATH = Path("/home/runner/upload_staging")
 
 def fetch_all_download_urls():
     urls_with_ids = []
@@ -59,7 +59,6 @@ def fetch_all_download_urls():
             url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
             if url_match:
                 url = url_match.group(0)
-                # 💡 URLから mediaid=XXXXXX の数字を抽出してフォルダ名の識別に使います
                 media_id = "unknown"
                 media_id_match = re.search(r'mediaid=(\d+)', url)
                 if media_id_match:
@@ -138,11 +137,10 @@ def save_to_mounted_drive(media_id):
         return False
         
     target_zip = zip_files[0]
-    # 💡 フォルダ名の末尾に固有のmedia_idを付与して、フォルダの重複自体を完全に防ぎます
     folder_name = f"{target_zip.stem}_{media_id}"
     output_folder = DRIVE_TARGET_PATH / folder_name
     output_folder.mkdir(parents=True, exist_ok=True)
-    print(f"🔓 指定フォルダ内に独立した動画保存用フォルダを作成しました: {output_folder}")
+    print(f"📂 一時ローカルフォルダ内に動画展開先を作成しました: {output_folder}")
     
     with zipfile.ZipFile(target_zip, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
@@ -151,17 +149,14 @@ def save_to_mounted_drive(media_id):
                 continue
                 
             final_path = output_folder / filename
-            print(f"🚀 マウント経由で指定フォルダへ直接転送中: {final_path.name}")
+            print(f"🚀 ローカルステージングへ解凍中: {final_path.name}")
             file_data = zip_ref.read(file_info.filename)
             with open(final_path, 'wb') as f:
                 f.write(file_data)
     return True
 
 if __name__ == "__main__":
-    print("🚀 巡回プログラムを起動しました。マウント状態をチェック中...")
-    if not DRIVE_TARGET_PATH.exists():
-        print(f"❌ Googleドライブフォルダが正常にマウントされていません: {DRIVE_TARGET_PATH}")
-        sys.exit(1)
+    DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
 
     print("🔍 Gmailの未読通知メールをスキャン中...")
     target_emails = fetch_all_download_urls()
@@ -178,14 +173,13 @@ if __name__ == "__main__":
             for idx, email_item in enumerate(target_emails, 1):
                 print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
                 if login_and_download(email_item['url']):
-                    # 💡 メディアIDを渡して、フォルダを完全に分離して保存
                     if save_to_mounted_drive(email_item['media_id']):
                         mail_client.store(email_item['id'], '+FLAGS', '\\Seen')
                         print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
                 time.sleep(3)
                 
             mail_client.logout()
-            print("\n✨ 【すべての新着動画】の一括転送処理が完了しました！")
+            print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
         except Exception as loop_err:
             print(f"❌ 一括処理ループ全体でエラーが発生しました: {loop_err}")
             if mail_client:
