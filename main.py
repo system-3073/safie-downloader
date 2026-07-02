@@ -5,6 +5,8 @@ import time
 import imaplib
 import email
 import zipfile
+import requests
+from datetime import datetime
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -16,10 +18,37 @@ GMAIL_USER = os.environ.get('GMAIL_USER')
 GMAIL_PASS = os.environ.get('GMAIL_PASS')
 SAFIE_ID = os.environ.get('SAFIE_ID')
 SAFIE_PW = os.environ.get('SAFIE_PW')
+CHAT_WEBHOOK_URL = os.environ.get('CHAT_WEBHOOK_URL')
 
-# 💡 安全な一時ローカルフォルダに保存させます
 DRIVE_TARGET_PATH = Path("/home/runner/upload_staging")
 
+# ==============================================================================
+# Google Chatへリプライ（返信）を送る関数
+# ==============================================================================
+def send_google_chat_reply(text, case_no):
+    if not CHAT_WEBHOOK_URL:
+        print("⚠️ CHAT_WEBHOOK_URL が設定されていないため、通知をスキップします。")
+        return
+        
+    url = CHAT_WEBHOOK_URL + "&messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+    payload = {
+        "text": text,
+        "thread": {
+            "threadKey": f"yoom_case_{case_no}"
+        }
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            print(f"💬 案件No.{case_no} のメッセージへ正常にリプライを送信しました。")
+        else:
+            print(f"❌ Google Chat通知エラー ({res.status_code}): {res.text}")
+    except Exception as e:
+        print(f"❌ Google Chat通信エラー: {e}")
+
+# ==============================================================================
+# Gmail解析
+# ==============================================================================
 def fetch_all_download_urls():
     urls_with_ids = []
     mail = None
@@ -59,12 +88,7 @@ def fetch_all_download_urls():
             url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
             if url_match:
                 url = url_match.group(0)
-                media_id = "unknown"
-                media_id_match = re.search(r'mediaid=(\d+)', url)
-                if media_id_match:
-                    media_id = media_id_match.group(1)
-                
-                urls_with_ids.append({"url": url, "id": m_id, "media_id": media_id})
+                urls_with_ids.append({"url": url, "id": m_id})
                 
         try: mail.logout()
         except: pass
@@ -129,7 +153,7 @@ def login_and_download(download_url):
         except: pass
     return is_success
 
-def save_to_mounted_drive(media_id):
+def save_to_dest_folder():
     download_dir = Path("./downloads")
     zip_files = list(download_dir.glob("*.zip"))
     if not zip_files: 
@@ -137,22 +161,53 @@ def save_to_mounted_drive(media_id):
         return False
         
     target_zip = zip_files[0]
-    folder_name = f"{target_zip.stem}_{media_id}"
-    output_folder = DRIVE_TARGET_PATH / folder_name
-    output_folder.mkdir(parents=True, exist_ok=True)
-    print(f"📂 一時ローカルフォルダ内に動画展開先を作成しました: {output_folder}")
+    zip_name = target_zip.stem  # 例: "458_KING_OF_THE_PIRATES_2026-06-24"
     
+    # 💡 ZIP名から情報を切り分けるロジック
+    # 正規表現で 「案件No_店舗名」 と 「日付(YYYY-MM-DD)」 を抽出します
+    case_no = "unknown"
+    parent_folder_name = zip_name  # 万が一解析に失敗した時のフォールバック先
+    date_folder_name = "unknown_date"
+    
+    # 案件No(数字) _ 店舗名(英数字文字) _ 日付 のパターンを解析
+    match = re.match(r'^(\d+)_(.+)_(\d{4}-\d{2}-\d{2})', zip_name)
+    if match:
+        case_no = match.group(1)                  # 例: "458"
+        shop_name = match.group(2)                # 例: "KING_OF_THE_PIRATES"
+        date_folder_name = match.group(3)         # 例: "2026-06-24"
+        parent_folder_name = f"{case_no}_{shop_name}"  # 階層1: "458_KING_OF_THE_PIRATES"
+    else:
+        # 切り分けに失敗した場合のシンプルな前方一致リトライ
+        case_match = re.match(r'^(\d+)', zip_name)
+        if case_match:
+            case_no = case_match.group(1)
+            
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', zip_name)
+        if date_match:
+            date_folder_name = date_match.group(1)
+            parent_folder_name = zip_name.replace(f"_{date_folder_name}", "")
+
     with zipfile.ZipFile(target_zip, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
             filename = os.path.basename(file_info.filename)
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
                 
+            # 💡 2階層のフォルダパスを生成 (親フォルダ / 日付フォルダ)
+            output_folder = DRIVE_TARGET_PATH / parent_folder_name / date_folder_name
+            output_folder.mkdir(parents=True, exist_ok=True)
+            
             final_path = output_folder / filename
-            print(f"🚀 ローカルステージングへ解凍中: {final_path.name}")
+            print(f"🚀 ローカルステージング（{parent_folder_name}/{date_folder_name}）へ解凍中: {final_path.name}")
             file_data = zip_ref.read(file_info.filename)
             with open(final_path, 'wb') as f:
                 f.write(file_data)
+                
+    # 💡 【完了時リプライ投稿】
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    reply_text = f"└ ✅ *自動保存完了*\nGoogleドライブの該当フォルダ `[{parent_folder_name} / {date_folder_name}]` への同期アップロードが正常に完了しました。 ({now_str})"
+    
+    send_google_chat_reply(reply_text, case_no)
     return True
 
 if __name__ == "__main__":
@@ -173,7 +228,7 @@ if __name__ == "__main__":
             for idx, email_item in enumerate(target_emails, 1):
                 print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
                 if login_and_download(email_item['url']):
-                    if save_to_mounted_drive(email_item['media_id']):
+                    if save_to_dest_folder():
                         mail_client.store(email_item['id'], '+FLAGS', '\\Seen')
                         print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
                 time.sleep(3)
