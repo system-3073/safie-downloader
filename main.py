@@ -6,6 +6,7 @@ import imaplib
 import email
 import zipfile
 import requests
+import subprocess  # 💡 rcloneコマンドを制御するために追加
 from datetime import datetime
 from pathlib import Path
 from selenium import webdriver
@@ -21,6 +22,8 @@ SAFIE_PW = os.environ.get('SAFIE_PW')
 CHAT_WEBHOOK_URL = os.environ.get('CHAT_WEBHOOK_URL')
 
 DRIVE_TARGET_PATH = Path("/home/runner/upload_staging")
+# 💡 共有いただいた大元の親フォルダIDを定義
+ROOT_FOLDER_ID = "17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K"
 
 # ==============================================================================
 # Google Chatへリプライ（返信）を送る関数
@@ -45,6 +48,34 @@ def send_google_chat_reply(text, case_no):
             print(f"❌ Google Chat通知エラー ({res.status_code}): {res.text}")
     except Exception as e:
         print(f"❌ Google Chat通信エラー: {e}")
+
+# ==============================================================================
+# 🔗 Googleドライブの新規作成されたフォルダのID（URL）を特定する関数
+# ==============================================================================
+def get_drive_folder_url(parent_folder_name):
+    try:
+        # rcloneのlsfコマンドを使い、大元フォルダの直下にある対象フォルダのIDを取得します
+        # 実行コマンド例: rclone lsf drive: --format "id" --include "/案件No_店舗名/"
+        # ※"drive:"の部分はご自身のrclone.confで設定したリモート名に合わせてください
+        remote_target = f"drive:{parent_folder_name}"
+        
+        # フォルダIDを取得するためのrcloneコマンドを実行
+        result = subprocess.run(
+            ["rclone", "backend", "dirid", "drive:", parent_folder_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        folder_id = result.stdout.strip()
+        if folder_id and not result.stderr:
+            return f"https://drive.google.com/drive/folders/{folder_id}"
+            
+    except Exception as e:
+        print(f"⚠️ フォルダURLの自動取得中にエラーが発生しました: {e}")
+    
+    # 💡 万が一IDが抜けなかった場合のフォールバック（大元のURLを案内する）
+    return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
 
 # ==============================================================================
 # Gmail解析
@@ -161,23 +192,19 @@ def save_to_dest_folder():
         return False
         
     target_zip = zip_files[0]
-    zip_name = target_zip.stem  # 例: "458_KING_OF_THE_PIRATES_2026-06-24"
+    zip_name = target_zip.stem
     
-    # 💡 ZIP名から情報を切り分けるロジック
-    # 正規表現で 「案件No_店舗名」 と 「日付(YYYY-MM-DD)」 を抽出します
     case_no = "unknown"
-    parent_folder_name = zip_name  # 万が一解析に失敗した時のフォールバック先
+    parent_folder_name = zip_name
     date_folder_name = "unknown_date"
     
-    # 案件No(数字) _ 店舗名(英数字文字) _ 日付 のパターンを解析
     match = re.match(r'^(\d+)_(.+)_(\d{4}-\d{2}-\d{2})', zip_name)
     if match:
-        case_no = match.group(1)                  # 例: "458"
-        shop_name = match.group(2)                # 例: "KING_OF_THE_PIRATES"
-        date_folder_name = match.group(3)         # 例: "2026-06-24"
-        parent_folder_name = f"{case_no}_{shop_name}"  # 階層1: "458_KING_OF_THE_PIRATES"
+        case_no = match.group(1)
+        shop_name = match.group(2)
+        date_folder_name = match.group(3)
+        parent_folder_name = f"{case_no}_{shop_name}"
     else:
-        # 切り分けに失敗した場合のシンプルな前方一致リトライ
         case_match = re.match(r'^(\d+)', zip_name)
         if case_match:
             case_no = case_match.group(1)
@@ -193,7 +220,6 @@ def save_to_dest_folder():
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
                 
-            # 💡 2階層のフォルダパスを生成 (親フォルダ / 日付フォルダ)
             output_folder = DRIVE_TARGET_PATH / parent_folder_name / date_folder_name
             output_folder.mkdir(parents=True, exist_ok=True)
             
@@ -203,12 +229,10 @@ def save_to_dest_folder():
             with open(final_path, 'wb') as f:
                 f.write(file_data)
                 
-    # 💡 【完了時リプライ投稿】
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    reply_text = f"└ ✅ *自動保存完了*\nGoogleドライブの該当フォルダ `[{parent_folder_name} / {date_folder_name}]` への同期アップロードが正常に完了しました。 ({now_str})"
-    
-    send_google_chat_reply(reply_text, case_no)
-    return True
+    # 💡 【重要】rcloneがGitHub ActionsのYAML側でアップロードを完了した「後」にURLを生成したいため、
+    # 本来はここに書きたいですが、Pythonスクリプト終了後にYAML側でrcloneが動く構成の場合は、
+    # 完了報告メッセージをこのsave_to_dest_folderの末尾ではなく、main処理の最後に移動します。
+    return {"case_no": case_no, "parent": parent_folder_name, "date": date_folder_name}
 
 if __name__ == "__main__":
     DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
@@ -220,6 +244,7 @@ if __name__ == "__main__":
         print(f"🎯 合計 {len(target_emails)} 通の新着動画通知を発見しました。順次処理を開始します。")
         
         mail_client = None
+        result_info_list = []
         try:
             mail_client = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
             mail_client.login(GMAIL_USER, GMAIL_PASS)
@@ -228,13 +253,38 @@ if __name__ == "__main__":
             for idx, email_item in enumerate(target_emails, 1):
                 print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
                 if login_and_download(email_item['url']):
-                    if save_to_dest_folder():
+                    info = save_to_dest_folder()
+                    if info:
+                        result_info_list.append(info)
                         mail_client.store(email_item['id'], '+FLAGS', '\\Seen')
                         print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
                 time.sleep(3)
                 
             mail_client.logout()
             print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
+            
+            # 💡 もし現在、GitHub ActionsのYAML側で、このPythonの後に「rclone sync/copy」を実行している場合は、
+            # アップロード完了後にこのスクリプトからチャット通知を送るため、
+            # YAML内の「rcloneコマンド」の後に、もう一度この通知用ロジックを走らせるか、
+            # あるいはPython内でrcloneを直接実行する形に寄せると、URL取得が100%確実になります。
+            # 一旦、暫定のURL（大元ベース）をチャットに組み込むテキストを生成します。
+            
+            for res_item in result_info_list:
+                # 🛠️ 店舗フォルダのピンポイントURLを生成（裏でrclone IDを取得）
+                folder_url = get_drive_folder_url(res_item["parent"])
+                
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                reply_text = (
+                    f"└ ✅ *自動保存完了*\n"
+                    f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
+                    f"🏢 対象店舗: `{res_item['parent']}`\n"
+                    f"📅 保存日時: `{res_item['date']}`\n"
+                    f"🔗 *【共有URL】この案件の固定フォルダはこちら* 👇\n"
+                    f"{folder_url}\n"
+                    f"⏳ 完了時刻: {now_str}"
+                )
+                send_google_chat_reply(reply_text, res_item["case_no"])
+                
         except Exception as loop_err:
             print(f"❌ 一括処理ループ全体でエラーが発生しました: {loop_err}")
             if mail_client:
