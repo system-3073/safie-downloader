@@ -55,7 +55,7 @@ def get_drive_folder_url(parent_folder_name):
     try:
         # rclone lsf を使って大元フォルダ内のフォルダ一覧と固有IDを取得します
         result = subprocess.run(
-            ["rclone", "lsf", f"drive:", "--format", "ip", "--dirs-only"],
+            ["rclone", "lsf", "drive:", "--format", "ip", "--dirs-only"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -197,6 +197,7 @@ def save_to_dest_folder():
     case_no = "unknown"
     parent_folder_name = zip_name
     date_folder_name = "unknown_date"
+    time_str = ""  # 💡 時刻保持用に追加
     
     match = re.match(r'^(\d+)_(.+)_(\d{4}-\d{2}-\d{2})', zip_name)
     if match:
@@ -220,6 +221,12 @@ def save_to_dest_folder():
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
                 
+            # 💡 動画ファイル名（例: 2026-07-23_20-00-00.mp4）から「20:00」を自動抽出するロジック
+            if not time_str and filename.endswith('.mp4'):
+                time_match = re.search(r'(\d{2})-(\d{2})-(\d{2})', filename)
+                if time_match:
+                    time_str = f" {time_match.group(1)}:{time_match.group(2)}〜"
+                
             output_folder = DRIVE_TARGET_PATH / parent_folder_name / date_folder_name
             output_folder.mkdir(parents=True, exist_ok=True)
             
@@ -229,7 +236,9 @@ def save_to_dest_folder():
             with open(final_path, 'wb') as f:
                 f.write(file_data)
                 
-    return {"case_no": case_no, "parent": parent_folder_name, "date": date_folder_name}
+    # 💡 日付と時刻をセットにして返却する
+    full_target_datetime = f"{date_folder_name}{time_str}"
+    return {"case_no": case_no, "parent": parent_folder_name, "date": full_target_datetime}
 
 if __name__ == "__main__":
     DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
@@ -268,12 +277,13 @@ if __name__ == "__main__":
                 # 改良した関数で「店舗用フォルダの固有URL」を直接取得
                 folder_url = get_drive_folder_url(res_item["parent"])
                 
+                # 💡 スッキリしたテキストリンク ＋ 日時表示
                 reply_text = (
                     f"└ ✅ *自動保存完了*\n"
                     f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
                     f"🏢 対象店舗: `{res_item['parent']}`\n"
-                    f"📅 保存日時: `{res_item['date']}`\n"
-                   f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
+                    f"📅 対象日時: `{res_item['date']}`\n"
+                    f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
                     f"⏳ 完了時刻: {now_jst}"
                 )
                 send_google_chat_reply(reply_text, res_item["case_no"])
