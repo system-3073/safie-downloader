@@ -41,6 +41,7 @@ jobs:
         GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
         SAFIE_ID: ${{ secrets.SAFIE_ID }}
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
+        CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
       run: python main.py
 
     - name: Googleドライブへ確実・同期アップロード（100%同期待機）
