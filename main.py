@@ -6,8 +6,8 @@ import imaplib
 import email
 import zipfile
 import requests
-import subprocess  # 💡 rcloneコマンドを制御するために追加
-from datetime import datetime
+import subprocess
+from datetime import datetime, timezone, timedelta  # 💡 時差調整用に追加
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -22,7 +22,6 @@ SAFIE_PW = os.environ.get('SAFIE_PW')
 CHAT_WEBHOOK_URL = os.environ.get('CHAT_WEBHOOK_URL')
 
 DRIVE_TARGET_PATH = Path("/home/runner/upload_staging")
-# 💡 共有いただいた大元の親フォルダIDを定義
 ROOT_FOLDER_ID = "17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K"
 
 # ==============================================================================
@@ -50,31 +49,32 @@ def send_google_chat_reply(text, case_no):
         print(f"❌ Google Chat通信エラー: {e}")
 
 # ==============================================================================
-# 🔗 Googleドライブの新規作成されたフォルダのID（URL）を特定する関数
+# 🔗 店舗用フォルダのピンポイント共有URLを確実に取得する関数（改良版）
 # ==============================================================================
 def get_drive_folder_url(parent_folder_name):
     try:
-        # rcloneのlsfコマンドを使い、大元フォルダの直下にある対象フォルダのIDを取得します
-        # 実行コマンド例: rclone lsf drive: --format "id" --include "/案件No_店舗名/"
-        # ※"drive:"の部分はご自身のrclone.confで設定したリモート名に合わせてください
-        remote_target = f"drive:{parent_folder_name}"
-        
-        # フォルダIDを取得するためのrcloneコマンドを実行
+        # rclone lsf を使って大元フォルダ内のフォルダ一覧と固有IDを取得します
         result = subprocess.run(
-            ["rclone", "backend", "dirid", "drive:", parent_folder_name],
+            ["rclone", "lsf", f"drive:", "--format", "ip", "--dirs-only"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
         
-        folder_id = result.stdout.strip()
-        if folder_id and not result.stderr:
-            return f"https://drive.google.com/drive/folders/{folder_id}"
-            
+        if result.stdout:
+            # 出力ライン（例: "1A2b3C4d... parent_folder_name/"）を1行ずつ解析
+            for line in result.stdout.strip().split('\n'):
+                parts = line.strip().split(maxsplit=1)
+                if len(parts) == 2:
+                    f_id, f_name = parts[0], parts[1].rstrip('/')
+                    if f_name == parent_folder_name:
+                        print(f"🎯 店舗フォルダの固有IDを取得しました: {f_id}")
+                        return f"https://drive.google.com/drive/folders/{f_id}"
+                        
     except Exception as e:
-        print(f"⚠️ フォルダURLの自動取得中にエラーが発生しました: {e}")
+        print(f"⚠️ フォルダURLの取得中にエラーが発生しました: {e}")
     
-    # 💡 万が一IDが抜けなかった場合のフォールバック（大元のURLを案内する）
+    # 取得できなかった場合のフォールバック（大元のURL）
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
 
 # ==============================================================================
@@ -229,9 +229,6 @@ def save_to_dest_folder():
             with open(final_path, 'wb') as f:
                 f.write(file_data)
                 
-    # 💡 【重要】rcloneがGitHub ActionsのYAML側でアップロードを完了した「後」にURLを生成したいため、
-    # 本来はここに書きたいですが、Pythonスクリプト終了後にYAML側でrcloneが動く構成の場合は、
-    # 完了報告メッセージをこのsave_to_dest_folderの末尾ではなく、main処理の最後に移動します。
     return {"case_no": case_no, "parent": parent_folder_name, "date": date_folder_name}
 
 if __name__ == "__main__":
@@ -263,17 +260,14 @@ if __name__ == "__main__":
             mail_client.logout()
             print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
             
-            # 💡 もし現在、GitHub ActionsのYAML側で、このPythonの後に「rclone sync/copy」を実行している場合は、
-            # アップロード完了後にこのスクリプトからチャット通知を送るため、
-            # YAML内の「rcloneコマンド」の後に、もう一度この通知用ロジックを走らせるか、
-            # あるいはPython内でrcloneを直接実行する形に寄せると、URL取得が100%確実になります。
-            # 一旦、暫定のURL（大元ベース）をチャットに組み込むテキストを生成します。
+            # 💡 【通知処理】日本時間（JST）の計算と、ピンポイントURLの取得
+            jst = timezone(timedelta(hours=9))  # 日本時間（+9時間）を定義
+            now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
             
             for res_item in result_info_list:
-                # 🛠️ 店舗フォルダのピンポイントURLを生成（裏でrclone IDを取得）
+                # 改良した関数で「店舗用フォルダの固有URL」を直接取得
                 folder_url = get_drive_folder_url(res_item["parent"])
                 
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 reply_text = (
                     f"└ ✅ *自動保存完了*\n"
                     f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
@@ -281,7 +275,7 @@ if __name__ == "__main__":
                     f"📅 保存日時: `{res_item['date']}`\n"
                     f"🔗 *【共有URL】この案件の固定フォルダはこちら* 👇\n"
                     f"{folder_url}\n"
-                    f"⏳ 完了時刻: {now_str}"
+                    f"⏳ 完了時刻: {now_jst}"
                 )
                 send_google_chat_reply(reply_text, res_item["case_no"])
                 
