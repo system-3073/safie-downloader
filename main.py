@@ -273,8 +273,7 @@ if __name__ == "__main__":
                     f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
                     f"🏢 対象店舗: `{res_item['parent']}`\n"
                     f"📅 保存日時: `{res_item['date']}`\n"
-                    f"🔗 *【共有URL】この案件の固定フォルダはこちら* 👇\n"
-                    f"{folder_url}\n"
+                   f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
                     f"⏳ 完了時刻: {now_jst}"
                 )
                 send_google_chat_reply(reply_text, res_item["case_no"])
