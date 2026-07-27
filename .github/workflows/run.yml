@@ -48,7 +48,7 @@ jobs:
       run: |
         if [ -d "/home/runner/upload_staging" ] && [ "$(ls -A /home/runner/upload_staging)" ]; then
           echo "🚀 ローカルに展開された動画を発見しました。Googleドライブへ確実に同期転送します..."
-          rclone copy /home/runner/upload_staging gdrive: --verbose
+          rclone copy /home/runner/upload_staging drive: --verbose
           echo "✨ すべてのフォルダと動画のクラウド同期が200%完了しました！"
         else
           echo "📭 アップロード対象の動画はありませんでした。"
