@@ -29,7 +29,7 @@ jobs:
         sudo curl https://rclone.org/install.sh | sudo bash
         mkdir -p ~/.config/rclone
         cat << EOF > ~/.config/rclone/rclone.conf
-        [gdrive]
+        [drive]
         type = drive
         token = ${{ secrets.DRIVE_CREDENTIALS }}
         root_folder_id = 17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K
