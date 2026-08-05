@@ -92,7 +92,9 @@ def fetch_all_download_urls():
         mail.login(GMAIL_USER, GMAIL_PASS)
         mail.select("inbox")
         
-        status, messages = mail.search(None, '(UNSEEN FROM "noreply@safie.jp")')
+       # 💡 TO に GMAIL_USER を指定する条件を追加
+        search_criterion = f'(UNSEEN FROM "noreply@safie.jp" TO "{GMAIL_USER}")'
+        status, messages = mail.search(None, search_criterion)
         if not messages[0]:
             print("📭 新しい未読通知メールはありませんでした。")
             try: mail.logout()
