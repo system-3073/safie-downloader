@@ -91,7 +91,6 @@ def fetch_all_download_urls():
             mail.login(GMAIL_USER, GMAIL_PASS)
             mail.select("inbox")
             
-            # 未読(UNSEEN) かつ Safieから かつ 宛先がGMAIL_USERのメールを検索
             search_criterion = f'(UNSEEN FROM "noreply@safie.jp" TO "{GMAIL_USER}")'
             status, messages = mail.search(None, search_criterion)
             
@@ -143,6 +142,25 @@ def fetch_all_download_urls():
             
     print("❌ 3回再試行しましたがGmailへ接続できませんでした。")
     return []
+
+# ==============================================================================
+# メールを既読にする専用関数（タイムアウト対策強化版）
+# ==============================================================================
+def mark_email_as_read(email_id):
+    import socket
+    socket.setdefaulttimeout(60)
+    for attempt in range(1, 4):
+        try:
+            m = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
+            m.login(GMAIL_USER, GMAIL_PASS)
+            m.select("inbox")
+            m.store(email_id, '+FLAGS', '\\Seen')
+            m.logout()
+            return True
+        except Exception as e:
+            print(f"⚠️ 既読フラグ付与で一時エラー ({e})。再試行中...")
+            time.sleep(3)
+    return False
 
 # ==============================================================================
 # Safieログイン ＆ ダウンロード
@@ -240,7 +258,6 @@ def save_to_dest_folder():
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
                 
-            # 動画ファイル名（例: 2026-07-23_20-00-00.mp4）から「20:00〜」を抽出
             if not time_str and filename.endswith('.mp4'):
                 time_match = re.search(r'(\d{2})-(\d{2})-(\d{2})', filename)
                 if time_match:
@@ -269,49 +286,34 @@ if __name__ == "__main__":
     
     if target_emails:
         print(f"🎯 合計 {len(target_emails)} 通の新着動画通知を発見しました。順次処理を開始します。")
-        
-        mail_client = None
         result_info_list = []
-        try:
-            mail_client = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
-            mail_client.login(GMAIL_USER, GMAIL_PASS)
-            mail_client.select("inbox")
-            
-            for idx, email_item in enumerate(target_emails, 1):
-                print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
-                if login_and_download(email_item['url']):
-                    info = save_to_dest_folder()
-                    if info:
-                        result_info_list.append(info)
-                        mail_client.store(email_item['id'], '+FLAGS', '\\Seen')
+        
+        for idx, email_item in enumerate(target_emails, 1):
+            print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
+            if login_and_download(email_item['url']):
+                info = save_to_dest_folder()
+                if info:
+                    result_info_list.append(info)
+                    if mark_email_as_read(email_item['id']):
                         print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
-                time.sleep(3)
-                
-            mail_client.logout()
-            print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
+            time.sleep(3)
             
-            # 日本時間（JST）の計算
-            jst = timezone(timedelta(hours=9))
-            now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
+        print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
+        
+        jst = timezone(timedelta(hours=9))
+        now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
+        
+        for res_item in result_info_list:
+            folder_url = get_drive_folder_url(res_item["parent"])
             
-            for res_item in result_info_list:
-                folder_url = get_drive_folder_url(res_item["parent"])
-                
-                # テキストリンク化（カード非表示）＋ 対象日時・時刻表示 ＋ JST完了時刻
-                reply_text = (
-                    f"└ ✅ *自動保存完了*\n"
-                    f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
-                    f"🏢 対象店舗: `{res_item['parent']}`\n"
-                    f"📅 対象日時: `{res_item['date']}`\n"
-                    f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
-                    f"⏳ 完了時刻: {now_jst}"
-                )
-                send_google_chat_reply(reply_text, res_item["case_no"])
-                
-        except Exception as loop_err:
-            print(f"❌ 一括処理ループ全体でエラーが発生しました: {loop_err}")
-            if mail_client:
-                try: mail_client.logout()
-                except: pass
+            reply_text = (
+                f"└ ✅ *自動保存完了*\n"
+                f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
+                f"🏢 対象店舗: `{res_item['parent']}`\n"
+                f"📅 対象日時: `{res_item['date']}`\n"
+                f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
+                f"⏳ 完了時刻: {now_jst}"
+            )
+            send_google_chat_reply(reply_text, res_item["case_no"])
     else:
         pass
