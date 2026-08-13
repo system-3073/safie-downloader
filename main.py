@@ -7,7 +7,7 @@ import email
 import zipfile
 import requests
 import subprocess
-from datetime import datetime, timezone, timedelta  # 💡 時差調整用に追加
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -49,11 +49,10 @@ def send_google_chat_reply(text, case_no):
         print(f"❌ Google Chat通信エラー: {e}")
 
 # ==============================================================================
-# 🔗 店舗用フォルダのピンポイント共有URLを確実に取得する関数（改良版）
+# 🔗 店舗用フォルダのピンポイント共有URLを確実に取得する関数
 # ==============================================================================
 def get_drive_folder_url(parent_folder_name):
     try:
-        # rclone lsf を使って大元フォルダ内のフォルダ一覧と固有IDを取得します
         result = subprocess.run(
             ["rclone", "lsf", "drive:", "--format", "ip", "--dirs-only"],
             stdout=subprocess.PIPE,
@@ -62,7 +61,6 @@ def get_drive_folder_url(parent_folder_name):
         )
         
         if result.stdout:
-            # 出力ライン（例: "1A2b3C4d... parent_folder_name/"）を1行ずつ解析
             for line in result.stdout.strip().split('\n'):
                 parts = line.strip().split(maxsplit=1)
                 if len(parts) == 2:
@@ -74,65 +72,81 @@ def get_drive_folder_url(parent_folder_name):
     except Exception as e:
         print(f"⚠️ フォルダURLの取得中にエラーが発生しました: {e}")
     
-    # 取得できなかった場合のフォールバック（大元のURL）
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
 
 # ==============================================================================
-# Gmail解析
+# Gmail解析（TO指定 ＆ タイムアウト60秒＆3回リトライ付き）
 # ==============================================================================
 def fetch_all_download_urls():
     urls_with_ids = []
     mail = None
-    try:
-        print("🔓 Gmailサーバーへ接続を試みています...")
-        import socket
-        socket.setdefaulttimeout(15)
-        
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
-        mail.login(GMAIL_USER, GMAIL_PASS)
-        mail.select("inbox")
-        
-       # 💡 TO に GMAIL_USER を指定する条件を追加
-        search_criterion = f'(UNSEEN FROM "noreply@safie.jp" TO "{GMAIL_USER}")'
-        status, messages = mail.search(None, search_criterion)
-        if not messages[0]:
-            print("📭 新しい未読通知メールはありませんでした。")
+    
+    for attempt in range(1, 4):
+        try:
+            print(f"🔓 Gmailサーバーへ接続を試みています... (試行 {attempt}/3)")
+            import socket
+            socket.setdefaulttimeout(60)
+            
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
+            mail.login(GMAIL_USER, GMAIL_PASS)
+            mail.select("inbox")
+            
+            # 未読(UNSEEN) かつ Safieから かつ 宛先がGMAIL_USERのメールを検索
+            search_criterion = f'(UNSEEN FROM "noreply@safie.jp" TO "{GMAIL_USER}")'
+            status, messages = mail.search(None, search_criterion)
+            
+            if not messages[0]:
+                print("📭 新しい未読通知メールはありませんでした。")
+                try: mail.logout()
+                except: pass
+                return []
+                
+            mail_ids = messages[0].split()
+            print(f"📩 未読メールを {len(mail_ids)} 通検知しました。解析中...")
+            
+            for m_id in mail_ids:
+                status, data = mail.fetch(m_id, "(RFC822)")
+                raw_email = data[0][1]
+                msg = email.message_from_bytes(raw_email)
+                
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() in ["text/html", "text/plain"]:
+                            body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            if "download/media" in body: break
+                else:
+                    body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    
+                url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
+                if url_match:
+                    url = url_match.group(0)
+                    urls_with_ids.append({"url": url, "id": m_id})
+                    
             try: mail.logout()
             except: pass
+            return urls_with_ids
+
+        except (socket.timeout, imaplib.IMAP4.error, TimeoutError) as e:
+            print(f"⚠️ 接続タイムアウト/エラーが発生しました ({e})。5秒後に再試行します...")
+            if mail:
+                try: mail.logout()
+                except: pass
+            time.sleep(5)
+            
+        except Exception as e:
+            print(f"❌ Gmail処理で例外が発生しました: {e}")
+            if mail:
+                try: mail.logout()
+                except: pass
             return []
             
-        mail_ids = messages[0].split()
-        print(f"📩 未読メールを {len(mail_ids)} 通検知しました。解析中...")
-        
-        for m_id in mail_ids:
-            status, data = mail.fetch(m_id, "(RFC822)")
-            raw_email = data[0][1]
-            msg = email.message_from_bytes(raw_email)
-            
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() in ["text/html", "text/plain"]:
-                        body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
-                        if "download/media" in body: break
-            else:
-                body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
-                
-            url_match = re.search(r'https://next-cloudview\.safie\.link/download/media\?mediaid=[^\s"\'><]+', body)
-            if url_match:
-                url = url_match.group(0)
-                urls_with_ids.append({"url": url, "id": m_id})
-                
-        try: mail.logout()
-        except: pass
-        return urls_with_ids
-    except Exception as e:
-        print(f"❌ Gmail処理で例外が発生しました: {e}")
-        if mail:
-            try: mail.logout()
-            except: pass
-        return []
+    print("❌ 3回再試行しましたがGmailへ接続できませんでした。")
+    return []
 
+# ==============================================================================
+# Safieログイン ＆ ダウンロード
+# ==============================================================================
 def login_and_download(download_url):
     download_dir = Path("./downloads")
     if download_dir.exists():
@@ -186,6 +200,9 @@ def login_and_download(download_url):
         except: pass
     return is_success
 
+# ==============================================================================
+# ローカル解凍 ＆ フォルダ展開
+# ==============================================================================
 def save_to_dest_folder():
     download_dir = Path("./downloads")
     zip_files = list(download_dir.glob("*.zip"))
@@ -199,7 +216,7 @@ def save_to_dest_folder():
     case_no = "unknown"
     parent_folder_name = zip_name
     date_folder_name = "unknown_date"
-    time_str = ""  # 💡 時刻保持用に追加
+    time_str = ""
     
     match = re.match(r'^(\d+)_(.+)_(\d{4}-\d{2}-\d{2})', zip_name)
     if match:
@@ -223,7 +240,7 @@ def save_to_dest_folder():
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
                 
-            # 💡 動画ファイル名（例: 2026-07-23_20-00-00.mp4）から「20:00」を自動抽出するロジック
+            # 動画ファイル名（例: 2026-07-23_20-00-00.mp4）から「20:00〜」を抽出
             if not time_str and filename.endswith('.mp4'):
                 time_match = re.search(r'(\d{2})-(\d{2})-(\d{2})', filename)
                 if time_match:
@@ -238,10 +255,12 @@ def save_to_dest_folder():
             with open(final_path, 'wb') as f:
                 f.write(file_data)
                 
-    # 💡 日付と時刻をセットにして返却する
     full_target_datetime = f"{date_folder_name}{time_str}"
     return {"case_no": case_no, "parent": parent_folder_name, "date": full_target_datetime}
 
+# ==============================================================================
+# メイン処理
+# ==============================================================================
 if __name__ == "__main__":
     DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
 
@@ -254,7 +273,7 @@ if __name__ == "__main__":
         mail_client = None
         result_info_list = []
         try:
-            mail_client = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
+            mail_client = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
             mail_client.login(GMAIL_USER, GMAIL_PASS)
             mail_client.select("inbox")
             
@@ -271,15 +290,14 @@ if __name__ == "__main__":
             mail_client.logout()
             print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
             
-            # 💡 【通知処理】日本時間（JST）の計算と、ピンポイントURLの取得
-            jst = timezone(timedelta(hours=9))  # 日本時間（+9時間）を定義
+            # 日本時間（JST）の計算
+            jst = timezone(timedelta(hours=9))
             now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
             
             for res_item in result_info_list:
-                # 改良した関数で「店舗用フォルダの固有URL」を直接取得
                 folder_url = get_drive_folder_url(res_item["parent"])
                 
-                # 💡 スッキリしたテキストリンク ＋ 日時表示
+                # テキストリンク化（カード非表示）＋ 対象日時・時刻表示 ＋ JST完了時刻
                 reply_text = (
                     f"└ ✅ *自動保存完了*\n"
                     f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
