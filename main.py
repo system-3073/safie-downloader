@@ -24,6 +24,9 @@ CHAT_WEBHOOK_URL = os.environ.get('CHAT_WEBHOOK_URL')
 DRIVE_TARGET_PATH = Path("/home/runner/upload_staging")
 ROOT_FOLDER_ID = "17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K"
 
+# ログを即座に画面へ出力させる（遅延防止）
+sys.stdout.reconfigure(line_buffering=True)
+
 # ==============================================================================
 # Google Chatへリプライ（返信）を送る関数
 # ==============================================================================
@@ -49,45 +52,46 @@ def send_google_chat_reply(text, case_no):
         print(f"❌ Google Chat通信エラー: {e}")
 
 # ==============================================================================
-# 🔗 店舗用フォルダのピンポイント共有URLを確実に取得する関数
+# 🔗 店舗用フォルダの共有URL取得（高速＆フリーズ防止版）
 # ==============================================================================
 def get_drive_folder_url(parent_folder_name):
     try:
+        print(f"🔎 GoogleドライブのフォルダIDを検索中... ({parent_folder_name})")
+        # timeout=10 を設定し、10秒以上かかったら強制的に打ち切って大元URLを返す
         result = subprocess.run(
-            ["rclone", "lsf", "drive:", "--format", "ip", "--dirs-only"],
+            ["rclone", "backend", "dirid", "drive:", parent_folder_name],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            timeout=10
         )
-        
-        if result.stdout:
-            for line in result.stdout.strip().split('\n'):
-                parts = line.strip().split(maxsplit=1)
-                if len(parts) == 2:
-                    f_id, f_name = parts[0], parts[1].rstrip('/')
-                    if f_name == parent_folder_name:
-                        print(f"🎯 店舗フォルダの固有IDを取得しました: {f_id}")
-                        return f"https://drive.google.com/drive/folders/{f_id}"
-                        
+        folder_id = result.stdout.strip()
+        if folder_id and not result.stderr:
+            print(f"🎯 固有IDの取得に成功しました: {folder_id}")
+            return f"https://drive.google.com/drive/folders/{folder_id}"
+            
+    except subprocess.TimeoutExpired:
+        print("⚠️ フォルダID検索が10秒を超過したため、安全のためスキップしました。")
     except Exception as e:
-        print(f"⚠️ フォルダURLの取得中にエラーが発生しました: {e}")
+        print(f"⚠️ フォルダURL取得エラー: {e}")
     
+    # フォールバック（親フォルダのURL）
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
 
 # ==============================================================================
-# Gmail解析（TO指定 ＆ タイムアウト60秒＆3回リトライ付き）
+# Gmail解析（高速接続 ＆ TO指定）
 # ==============================================================================
 def fetch_all_download_urls():
     urls_with_ids = []
     mail = None
     
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         try:
-            print(f"🔓 Gmailサーバーへ接続を試みています... (試行 {attempt}/3)")
+            print(f"🔓 Gmailサーバーへ接続中... (試行 {attempt}/2)")
             import socket
-            socket.setdefaulttimeout(60)
+            socket.setdefaulttimeout(15)
             
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
             mail.login(GMAIL_USER, GMAIL_PASS)
             mail.select("inbox")
             
@@ -126,41 +130,29 @@ def fetch_all_download_urls():
             except: pass
             return urls_with_ids
 
-        except (socket.timeout, imaplib.IMAP4.error, TimeoutError) as e:
-            print(f"⚠️ 接続タイムアウト/エラーが発生しました ({e})。5秒後に再試行します...")
-            if mail:
-                try: mail.logout()
-                except: pass
-            time.sleep(5)
-            
         except Exception as e:
-            print(f"❌ Gmail処理で例外が発生しました: {e}")
+            print(f"⚠️ Gmail接続一時エラー ({e})。再接続します...")
             if mail:
                 try: mail.logout()
                 except: pass
-            return []
+            time.sleep(2)
             
-    print("❌ 3回再試行しましたがGmailへ接続できませんでした。")
     return []
 
 # ==============================================================================
-# メールを既読にする専用関数（タイムアウト対策強化版）
+# メール既読化関数
 # ==============================================================================
 def mark_email_as_read(email_id):
-    import socket
-    socket.setdefaulttimeout(60)
-    for attempt in range(1, 4):
-        try:
-            m = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
-            m.login(GMAIL_USER, GMAIL_PASS)
-            m.select("inbox")
-            m.store(email_id, '+FLAGS', '\\Seen')
-            m.logout()
-            return True
-        except Exception as e:
-            print(f"⚠️ 既読フラグ付与で一時エラー ({e})。再試行中...")
-            time.sleep(3)
-    return False
+    try:
+        m = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
+        m.login(GMAIL_USER, GMAIL_PASS)
+        m.select("inbox")
+        m.store(email_id, '+FLAGS', '\\Seen')
+        m.logout()
+        return True
+    except Exception as e:
+        print(f"⚠️ 既読スキップ: {e}")
+        return False
 
 # ==============================================================================
 # Safieログイン ＆ ダウンロード
@@ -188,7 +180,7 @@ def login_and_download(download_url):
     is_success = False
     
     try:
-        print(f"🔗 SafieダウンロードURLへアクセス中: {download_url}")
+        print(f"🔗 Safieアクセス中: {download_url}")
         driver.get(download_url)
         wait = WebDriverWait(driver, 10)
         
@@ -202,17 +194,17 @@ def login_and_download(download_url):
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, login_btn))))
         
         timeout = 0
-        while timeout < 180:
+        while timeout < 120:
             crdownloads = list(download_dir.glob("*.crdownload"))
             zip_files = list(download_dir.glob("*.zip"))
             if not crdownloads and zip_files:
                 is_success = True
-                print("✅ SafieからのZIPダウンロードが100%完了しました。")
+                print("✅ ZIPダウンロード完了")
                 break
-            time.sleep(3)
-            timeout += 3
+            time.sleep(2)
+            timeout += 2
     except Exception as e:
-        print(f"❌ ブラウザ自動操作エラー: {e}")
+        print(f"❌ ブラウザエラー: {e}")
     finally:
         try: driver.quit()
         except: pass
@@ -225,7 +217,7 @@ def save_to_dest_folder():
     download_dir = Path("./downloads")
     zip_files = list(download_dir.glob("*.zip"))
     if not zip_files: 
-        print("❌ 対象のZIPファイルが見つかりません。")
+        print("❌ ZIPが見つかりません")
         return False
         
     target_zip = zip_files[0]
@@ -267,7 +259,7 @@ def save_to_dest_folder():
             output_folder.mkdir(parents=True, exist_ok=True)
             
             final_path = output_folder / filename
-            print(f"🚀 ローカルステージング（{parent_folder_name}/{date_folder_name}）へ解凍中: {final_path.name}")
+            print(f"🚀 解凍中: {final_path.name}")
             file_data = zip_ref.read(file_info.filename)
             with open(final_path, 'wb') as f:
                 f.write(file_data)
@@ -281,24 +273,23 @@ def save_to_dest_folder():
 if __name__ == "__main__":
     DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
 
-    print("🔍 Gmailの未読通知メールをスキャン中...")
+    print("🔍 Gmailスキャン開始...")
     target_emails = fetch_all_download_urls()
     
     if target_emails:
-        print(f"🎯 合計 {len(target_emails)} 通の新着動画通知を発見しました。順次処理を開始します。")
+        print(f"🎯 対象件数: {len(target_emails)} 件")
         result_info_list = []
         
         for idx, email_item in enumerate(target_emails, 1):
-            print(f"\n--- ［{idx} / {len(target_emails)} 通目］の処理を開始 ---")
+            print(f"\n--- ［{idx} / {len(target_emails)} 件目］ ---")
             if login_and_download(email_item['url']):
                 info = save_to_dest_folder()
                 if info:
                     result_info_list.append(info)
-                    if mark_email_as_read(email_item['id']):
-                        print(f"✅ {idx} 通目の処理が正常に完了し、既読にしました。")
-            time.sleep(3)
+                    mark_email_as_read(email_item['id'])
+            time.sleep(1)
             
-        print("\n✨ 【すべての新着動画】のローカル展開が完了しました！")
+        print("\n✨ 動画のローカル展開完了")
         
         jst = timezone(timedelta(hours=9))
         now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
@@ -316,4 +307,4 @@ if __name__ == "__main__":
             )
             send_google_chat_reply(reply_text, res_item["case_no"])
     else:
-        pass
+        print("📭 新着の対象メールはありませんでした。")
