@@ -51,33 +51,42 @@ def send_google_chat_reply(text, case_no):
     except Exception as e:
         print(f"❌ Google Chat通信エラー: {e}")
 
+import json
+
 # ==============================================================================
-# 🔗 店舗用フォルダの共有URL取得（高速＆フリーズ防止版）
+# 🔗 店舗用フォルダの共有URL取得（lsjsonによる確実取得版）
 # ==============================================================================
 def get_drive_folder_url(parent_folder_name):
     try:
-        print(f"🔎 GoogleドライブのフォルダIDを検索中... ({parent_folder_name})")
-        # timeout=10 を設定し、10秒以上かかったら強制的に打ち切って大元URLを返す
+        print(f"🔎 Googleドライブの店舗フォルダIDを検索中... (`{parent_folder_name}`)")
+        
+        # rclone lsjson を使って大元フォルダ直下のサブフォルダ一覧をJSON形式で取得
         result = subprocess.run(
-            ["rclone", "backend", "dirid", "drive:", parent_folder_name],
+            ["rclone", "lsjson", "drive:", "--dirs-only"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=10
+            timeout=15
         )
-        folder_id = result.stdout.strip()
-        if folder_id and not result.stderr:
-            print(f"🎯 固有IDの取得に成功しました: {folder_id}")
-            return f"https://drive.google.com/drive/folders/{folder_id}"
-            
+        
+        if result.stdout:
+            folders = json.loads(result.stdout)
+            for item in folders:
+                # フォルダ名が一致するものを探す
+                if item.get("Path") == parent_folder_name or item.get("Name") == parent_folder_name:
+                    folder_id = item.get("ID")
+                    if folder_id:
+                        print(f"🎯 店舗フォルダの固有IDを100%特定しました: {folder_id}")
+                        return f"https://drive.google.com/drive/folders/{folder_id}"
+                        
     except subprocess.TimeoutExpired:
-        print("⚠️ フォルダID検索が10秒を超過したため、安全のためスキップしました。")
+        print("⚠️ フォルダID検索が10秒を超過したため、大元URLを使用します。")
     except Exception as e:
         print(f"⚠️ フォルダURL取得エラー: {e}")
     
-    # フォールバック（親フォルダのURL）
+    print("⚠️ 店舗フォルダが見つからなかったため、親フォルダのURLを返します。")
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
-
+    
 # ==============================================================================
 # Gmail解析（高速接続 ＆ TO指定）
 # ==============================================================================
