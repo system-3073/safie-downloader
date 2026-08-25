@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import time
+import json
 import imaplib
 import email
 import zipfile
@@ -51,16 +52,21 @@ def send_google_chat_reply(text, case_no):
     except Exception as e:
         print(f"❌ Google Chat通信エラー: {e}")
 
-import json
-
 # ==============================================================================
-# 🔗 店舗用フォルダの共有URL取得（lsjsonによる確実取得版）
+# 💡 Googleドライブ上に空フォルダを先行作成 ＆ 固有URLを取得する関数
 # ==============================================================================
-def get_drive_folder_url(parent_folder_name):
+def create_and_get_drive_folder_url(parent_folder_name):
     try:
-        print(f"🔎 Googleドライブの店舗フォルダIDを検索中... (`{parent_folder_name}`)")
+        print(f"📁 Googleドライブ上に店舗フォルダを先行作成中... (`{parent_folder_name}`)")
+        # 1. Googleドライブ上に店舗用フォルダを作成（すでに存在する場合はスキップされます）
+        subprocess.run(
+            ["rclone", "mkdir", f"drive:{parent_folder_name}"],
+            check=True,
+            timeout=15
+        )
         
-        # rclone lsjson を使って大元フォルダ直下のサブフォルダ一覧をJSON形式で取得
+        # 2. 作成されたフォルダの固有IDを検索
+        print(f"🔎 作成したフォルダの固有IDを取得中...")
         result = subprocess.run(
             ["rclone", "lsjson", "drive:", "--dirs-only"],
             stdout=subprocess.PIPE,
@@ -72,40 +78,36 @@ def get_drive_folder_url(parent_folder_name):
         if result.stdout:
             folders = json.loads(result.stdout)
             for item in folders:
-                # フォルダ名が一致するものを探す
                 if item.get("Path") == parent_folder_name or item.get("Name") == parent_folder_name:
                     folder_id = item.get("ID")
                     if folder_id:
-                        print(f"🎯 店舗フォルダの固有IDを100%特定しました: {folder_id}")
+                        print(f"🎯 店舗フォルダの固有IDを取得しました: {folder_id}")
                         return f"https://drive.google.com/drive/folders/{folder_id}"
                         
-    except subprocess.TimeoutExpired:
-        print("⚠️ フォルダID検索が10秒を超過したため、大元URLを使用します。")
     except Exception as e:
-        print(f"⚠️ フォルダURL取得エラー: {e}")
+        print(f"⚠️ 先行フォルダ作成/URL取得中にエラーが発生しました: {e}")
     
-    print("⚠️ 店舗フォルダが見つからなかったため、親フォルダのURLを返します。")
+    # 失敗した場合のフォールバック（親フォルダのURL）
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
-    
+
 # ==============================================================================
-# Gmail解析（高速接続 ＆ TO指定）
+# Gmail解析（Python側でのTO判定 ＆ タイムアウト防止）
 # ==============================================================================
 def fetch_all_download_urls():
     urls_with_ids = []
     mail = None
     
-    for attempt in range(1, 3):
+    for attempt in range(1, 4):
         try:
-            print(f"🔓 Gmailサーバーへ接続中... (試行 {attempt}/2)")
+            print(f"🔓 Gmailサーバーへ接続中... (試行 {attempt}/3)")
             import socket
-            socket.setdefaulttimeout(15)
+            socket.setdefaulttimeout(30)
             
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
             mail.login(GMAIL_USER, GMAIL_PASS)
             mail.select("inbox")
             
-            search_criterion = f'(UNSEEN FROM "noreply@safie.jp" TO "{GMAIL_USER}")'
-            status, messages = mail.search(None, search_criterion)
+            status, messages = mail.search(None, '(UNSEEN FROM "noreply@safie.jp")')
             
             if not messages[0]:
                 print("📭 新しい未読通知メールはありませんでした。")
@@ -120,6 +122,11 @@ def fetch_all_download_urls():
                 status, data = mail.fetch(m_id, "(RFC822)")
                 raw_email = data[0][1]
                 msg = email.message_from_bytes(raw_email)
+                
+                to_header = msg.get("To", "")
+                if GMAIL_USER and GMAIL_USER.lower() not in to_header.lower():
+                    print(f"⏭️ 宛先が一致しないためスキップしました ({to_header})")
+                    continue
                 
                 body = ""
                 if msg.is_multipart():
@@ -140,11 +147,11 @@ def fetch_all_download_urls():
             return urls_with_ids
 
         except Exception as e:
-            print(f"⚠️ Gmail接続一時エラー ({e})。再接続します...")
+            print(f"⚠️ Gmail接続エラー ({e})。再接続します...")
             if mail:
                 try: mail.logout()
                 except: pass
-            time.sleep(2)
+            time.sleep(3)
             
     return []
 
@@ -304,7 +311,8 @@ if __name__ == "__main__":
         now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
         
         for res_item in result_info_list:
-            folder_url = get_drive_folder_url(res_item["parent"])
+            # 💡 店舗フォルダをドライブ上に先行作成し、100%固有URLを取得！
+            folder_url = create_and_get_drive_folder_url(res_item["parent"])
             
             reply_text = (
                 f"└ ✅ *自動保存完了*\n"
