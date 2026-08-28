@@ -266,8 +266,9 @@ def save_to_dest_folder():
             if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                 continue
                 
+            # 💡 日付(YYYY-MM-DD)の後ろに続く時刻(HH-MM-SS)をピンポイントで抽出
             if not time_str and filename.endswith('.mp4'):
-                time_match = re.search(r'(\d{2})-(\d{2})-(\d{2})', filename)
+                time_match = re.search(r'\d{4}-\d{2}-\d{2}[_T](\d{2})-(\d{2})', filename)
                 if time_match:
                     time_str = f" {time_match.group(1)}:{time_match.group(2)}〜"
                 
