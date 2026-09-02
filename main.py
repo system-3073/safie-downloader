@@ -209,16 +209,22 @@ def login_and_download(download_url):
         login_btn = "//sf-login-page//sf-login//form/div[2]/div[6]//sf-button-v1/div"
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, login_btn))))
         
+       # 💡 修正後：大容量ファイル用にタイムアウトを10分（600秒）へ延長
         timeout = 0
-        while timeout < 120:
+        while timeout < 600:
             crdownloads = list(download_dir.glob("*.crdownload"))
             zip_files = list(download_dir.glob("*.zip"))
+            
+            # ダウンロード中（.crdownloadが存在する）場合は進捗を出力
+            if crdownloads and timeout % 10 == 0:
+                print(f"⏳ 大容量ファイルをダウンロード中... ({timeout}秒経過)")
+                
             if not crdownloads and zip_files:
                 is_success = True
-                print("✅ ZIPダウンロード完了")
+                print(f"✅ ZIPダウンロードが100%完了しました（所要時間: {timeout}秒）")
                 break
-            time.sleep(2)
-            timeout += 2
+            time.sleep(3)
+            timeout += 3
     except Exception as e:
         print(f"❌ ブラウザエラー: {e}")
     finally:
