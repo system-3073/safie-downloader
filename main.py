@@ -291,7 +291,7 @@ def save_to_dest_folder():
     return {"case_no": case_no, "parent": parent_folder_name, "date": full_target_datetime}
 
 # ==============================================================================
-# メイン処理
+# メイン処理（重複通知防止 ＆ タイムアウト緩和版）
 # ==============================================================================
 if __name__ == "__main__":
     DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
@@ -317,8 +317,15 @@ if __name__ == "__main__":
         jst = timezone(timedelta(hours=9))
         now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
         
-        for res_item in result_info_list:
-            # 💡 店舗フォルダをドライブ上に先行作成し、100%固有URLを取得！
+        # 💡 重複通知を防止するため、案件No（case_no）ごとにユニーク（1つ）にまとめる
+        processed_cases = {}
+        for item in result_info_list:
+            c_no = item["case_no"]
+            if c_no not in processed_cases:
+                processed_cases[c_no] = item
+        
+        # 重複のない案件ごとに1回だけ通知を送信
+        for case_no, res_item in processed_cases.items():
             folder_url = create_and_get_drive_folder_url(res_item["parent"])
             
             reply_text = (
@@ -329,6 +336,6 @@ if __name__ == "__main__":
                 f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
                 f"⏳ 完了時刻: {now_jst}"
             )
-            send_google_chat_reply(reply_text, res_item["case_no"])
+            send_google_chat_reply(reply_text, case_no)
     else:
         print("📭 新着の対象メールはありませんでした。")
