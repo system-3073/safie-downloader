@@ -53,41 +53,60 @@ def send_google_chat_reply(text, case_no):
         print(f"❌ Google Chat通信エラー: {e}")
 
 # ==============================================================================
-# 💡 Googleドライブ上に空フォルダを先行作成 ＆ 固有URLを取得する関数
+# 💡 Googleドライブ上に空フォルダを先行作成 ＆ 固有URLを100%取得する関数
 # ==============================================================================
 def create_and_get_drive_folder_url(parent_folder_name):
     try:
         print(f"📁 Googleドライブ上に店舗フォルダを先行作成中... (`{parent_folder_name}`)")
-        # 1. Googleドライブ上に店舗用フォルダを作成（すでに存在する場合はスキップされます）
+        # 1. Googleドライブ上に店舗用フォルダを作成（すでに存在する場合はスキップ）
         subprocess.run(
             ["rclone", "mkdir", f"drive:{parent_folder_name}"],
             check=True,
-            timeout=15
+            timeout=30
         )
         
-        # 2. 作成されたフォルダの固有IDを検索
+        # 💡 ドライブ側のインデックス反映を待つために2秒一時停止
+        time.sleep(2)
+        
         print(f"🔎 作成したフォルダの固有IDを取得中...")
         result = subprocess.run(
             ["rclone", "lsjson", "drive:", "--dirs-only"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=15
+            timeout=30
         )
         
         if result.stdout:
             folders = json.loads(result.stdout)
             for item in folders:
-                if item.get("Path") == parent_folder_name or item.get("Name") == parent_folder_name:
+                path_name = item.get("Path", "").strip()
+                item_name = item.get("Name", "").strip()
+                target_name = parent_folder_name.strip()
+                
+                if path_name == target_name or item_name == target_name:
                     folder_id = item.get("ID")
                     if folder_id:
                         print(f"🎯 店舗フォルダの固有IDを取得しました: {folder_id}")
                         return f"https://drive.google.com/drive/folders/{folder_id}"
                         
+            # 💡 保険：lsjsonで見つからなかった場合、rclone backend diridで直接取得を試みる
+            dirid_res = subprocess.run(
+                ["rclone", "backend", "dirid", "drive:", parent_folder_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15
+            )
+            f_id = dirid_res.stdout.strip()
+            if f_id and not dirid_res.stderr:
+                print(f"🎯 dirid コマンドにて固有IDを取得しました: {f_id}")
+                return f"https://drive.google.com/drive/folders/{f_id}"
+
     except Exception as e:
         print(f"⚠️ 先行フォルダ作成/URL取得中にエラーが発生しました: {e}")
     
-    # 失敗した場合のフォールバック（親フォルダのURL）
+    print("⚠️ 店舗フォルダの固有IDが取得できなかったため、親フォルダのURLを返します。")
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
 
 # ==============================================================================
@@ -209,19 +228,17 @@ def login_and_download(download_url):
         login_btn = "//sf-login-page//sf-login//form/div[2]/div[6]//sf-button-v1/div"
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, login_btn))))
         
-       # 💡 修正後：大容量ファイル用にタイムアウトを10分（600秒）へ延長
         timeout = 0
         while timeout < 600:
             crdownloads = list(download_dir.glob("*.crdownload"))
             zip_files = list(download_dir.glob("*.zip"))
             
-            # ダウンロード中（.crdownloadが存在する）場合は進捗を出力
-            if crdownloads and timeout % 10 == 0:
-                print(f"⏳ 大容量ファイルをダウンロード中... ({timeout}秒経過)")
+            if crdownloads and timeout % 15 == 0:
+                print(f"⏳ 大容量ファイルをDL中... ({timeout}秒経過)")
                 
             if not crdownloads and zip_files:
                 is_success = True
-                print(f"✅ ZIPダウンロードが100%完了しました（所要時間: {timeout}秒）")
+                print(f"✅ ZIPダウンロード100%完了 (所要時間: {timeout}秒)")
                 break
             time.sleep(3)
             timeout += 3
@@ -233,7 +250,7 @@ def login_and_download(download_url):
     return is_success
 
 # ==============================================================================
-# ローカル解凍 ＆ フォルダ展開
+# ローカル解凍 ＆ フォルダ展開（容量自動削減ロジック付き）
 # ==============================================================================
 def save_to_dest_folder():
     download_dir = Path("./downloads")
@@ -266,27 +283,48 @@ def save_to_dest_folder():
             date_folder_name = date_match.group(1)
             parent_folder_name = zip_name.replace(f"_{date_folder_name}", "")
 
-    with zipfile.ZipFile(target_zip, 'r') as zip_ref:
-        for file_info in zip_ref.infolist():
-            filename = os.path.basename(file_info.filename)
-            if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
-                continue
-                
-            # 💡 日付(YYYY-MM-DD)の後ろに続く時刻(HH-MM-SS)をピンポイントで抽出
-            if not time_str and filename.endswith('.mp4'):
-                time_match = re.search(r'\d{4}-\d{2}-\d{2}[_T](\d{2})-(\d{2})', filename)
-                if time_match:
-                    time_str = f" {time_match.group(1)}:{time_match.group(2)}〜"
-                
-            output_folder = DRIVE_TARGET_PATH / parent_folder_name / date_folder_name
-            output_folder.mkdir(parents=True, exist_ok=True)
+    print(f"📦 ZIPファイルの解凍を開始します: {target_zip.name}")
+    extracted_count = 0
+    
+    try:
+        with zipfile.ZipFile(target_zip, 'r') as zip_ref:
+            infolist = zip_ref.infolist()
+            total_files = len(infolist)
             
-            final_path = output_folder / filename
-            print(f"🚀 解凍中: {final_path.name}")
-            file_data = zip_ref.read(file_info.filename)
-            with open(final_path, 'wb') as f:
-                f.write(file_data)
+            for file_info in infolist:
+                filename = os.path.basename(file_info.filename)
+                if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
+                    continue
+                    
+                # 💡 日付(YYYY-MM-DD)の直後にある時刻(HH-MM)だけを厳密に抽出
+                if not time_str and filename.endswith('.mp4'):
+                    time_match = re.search(r'\d{4}-\d{2}-\d{2}[_T](\d{2})-(\d{2})', filename)
+                    if time_match:
+                        time_str = f" {time_match.group(1)}:{time_match.group(2)}〜"
+                    
+                output_folder = DRIVE_TARGET_PATH / parent_folder_name / date_folder_name
+                output_folder.mkdir(parents=True, exist_ok=True)
                 
+                final_path = output_folder / filename
+                file_data = zip_ref.read(file_info.filename)
+                with open(final_path, 'wb') as f:
+                    f.write(file_data)
+                
+                extracted_count += 1
+                if extracted_count % 5 == 0 or extracted_count == total_files:
+                    print(f"🚀 解凍進捗: [{extracted_count}/{total_files}] {filename}")
+                    
+    except Exception as extract_err:
+        print(f"❌ 解凍処理中にエラーが発生しました: {extract_err}")
+        return False
+    finally:
+        # 💡 解凍が終わったら不要になった巨大な元のZIPファイルを即座に削除して容量を確保！
+        try:
+            target_zip.unlink()
+            print(f"🧹 ディスク容量確保のため、解凍済みのZIP（{target_zip.name}）を削除しました。")
+        except Exception as del_err:
+            print(f"⚠️ ZIP削除スキップ: {del_err}")
+
     full_target_datetime = f"{date_folder_name}{time_str}"
     return {"case_no": case_no, "parent": parent_folder_name, "date": full_target_datetime}
 
