@@ -1,10 +1,9 @@
 name: Safie Auto Downloader (GAS Triggered Version)
 
-# 💡 10分おきの定期実行(schedule)を廃止し、外部（GAS）からの信号(repository_dispatch)で動くようにします
 on:
   repository_dispatch:
     types: [trigger_safie_download]
-  workflow_dispatch: # 手動起動ボタン（残しておきます）
+  workflow_dispatch:
 
 jobs:
   check_job:
@@ -35,15 +34,16 @@ jobs:
         root_folder_id = 17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K
         EOF
 
+    # 1. まず動画をダウンロード＆ローカルに解凍（ここではまだ通知を送らない）
     - name: 巡回プログラムの実行（ローカルへの動画展開）
       env:
         GMAIL_USER: ${{ secrets.GMAIL_USER }}
         GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
         SAFIE_ID: ${{ secrets.SAFIE_ID }}
         SAFIE_PW: ${{ secrets.SAFIE_PW }}
-        CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
       run: python main.py
 
+    # 2. 解凍された動画をGoogleドライブへ完全同期（フォルダが作成される）
     - name: Googleドライブへ確実・同期アップロード（100%同期待機）
       run: |
         if [ -d "/home/runner/upload_staging" ] && [ "$(ls -A /home/runner/upload_staging)" ]; then
@@ -53,3 +53,9 @@ jobs:
         else
           echo "📭 アップロード対象の動画はありませんでした。"
         fi
+
+    # 3. アップロード完了後、確定したフォルダの個別URLを取得してGoogle Chatへ通知！
+    - name: アップロード完了後にチャット通知を送信
+      env:
+        CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
+      run: python main.py --notify-only
