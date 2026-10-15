@@ -24,6 +24,7 @@ CHAT_WEBHOOK_URL = os.environ.get('CHAT_WEBHOOK_URL')
 
 DRIVE_TARGET_PATH = Path("/home/runner/upload_staging")
 ROOT_FOLDER_ID = "17lDpuOIqM7iLQPLm_1EVOHqBxEQ7195K"
+CACHE_FILE = Path("/home/runner/result_cache.json")
 
 # ログを即座に画面へ出力させる（遅延防止）
 sys.stdout.reconfigure(line_buffering=True)
@@ -53,22 +54,26 @@ def send_google_chat_reply(text, case_no):
         print(f"❌ Google Chat通信エラー: {e}")
 
 # ==============================================================================
-# 💡 Googleドライブ上に空フォルダを先行作成 ＆ 固有URLを100%取得する関数
+# 🎯 アップロード完了済みのGoogleドライブから固有URLを100%取得する関数
 # ==============================================================================
-def create_and_get_drive_folder_url(parent_folder_name):
+def get_uploaded_drive_folder_url(parent_folder_name):
     try:
-        print(f"📁 Googleドライブ上に店舗フォルダを先行作成中... (`{parent_folder_name}`)")
-        # 1. Googleドライブ上に店舗用フォルダを作成（すでに存在する場合はスキップ）
-        subprocess.run(
-            ["rclone", "mkdir", f"drive:{parent_folder_name}"],
-            check=True,
-            timeout=30
+        print(f"🔎 アップロード完了済みの店舗フォルダIDを検索中... (`{parent_folder_name}`)")
+        
+        # 1. rclone backend dirid でピンポイント検索
+        dirid_res = subprocess.run(
+            ["rclone", "backend", "dirid", "drive:", parent_folder_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20
         )
-        
-        # 💡 ドライブ側のインデックス反映を待つために2秒一時停止
-        time.sleep(2)
-        
-        print(f"🔎 作成したフォルダの固有IDを取得中...")
+        f_id = dirid_res.stdout.strip()
+        if f_id and not dirid_res.stderr and "error" not in f_id.lower():
+            print(f"🎯 固有IDの取得に成功しました: {f_id}")
+            return f"https://drive.google.com/drive/folders/{f_id}"
+
+        # 2. 保険：lsjson による一覧照合
         result = subprocess.run(
             ["rclone", "lsjson", "drive:", "--dirs-only"],
             stdout=subprocess.PIPE,
@@ -87,30 +92,17 @@ def create_and_get_drive_folder_url(parent_folder_name):
                 if path_name == target_name or item_name == target_name:
                     folder_id = item.get("ID")
                     if folder_id:
-                        print(f"🎯 店舗フォルダの固有IDを取得しました: {folder_id}")
+                        print(f"🎯 lsjson経由で固有IDを取得しました: {folder_id}")
                         return f"https://drive.google.com/drive/folders/{folder_id}"
-                        
-            # 💡 保険：lsjsonで見つからなかった場合、rclone backend diridで直接取得を試みる
-            dirid_res = subprocess.run(
-                ["rclone", "backend", "dirid", "drive:", parent_folder_name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=15
-            )
-            f_id = dirid_res.stdout.strip()
-            if f_id and not dirid_res.stderr:
-                print(f"🎯 dirid コマンドにて固有IDを取得しました: {f_id}")
-                return f"https://drive.google.com/drive/folders/{f_id}"
 
     except Exception as e:
-        print(f"⚠️ 先行フォルダ作成/URL取得中にエラーが発生しました: {e}")
+        print(f"⚠️ URL取得中にエラーが発生しました: {e}")
     
-    print("⚠️ 店舗フォルダの固有IDが取得できなかったため、親フォルダのURLを返します。")
+    print("⚠️ フォルダIDが検出されなかったため、ルートフォルダのURLを使用します。")
     return f"https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}"
 
 # ==============================================================================
-# Gmail解析（Python側でのTO判定 ＆ タイムアウト防止）
+# Gmail解析
 # ==============================================================================
 def fetch_all_download_urls():
     urls_with_ids = []
@@ -250,7 +242,7 @@ def login_and_download(download_url):
     return is_success
 
 # ==============================================================================
-# ローカル解凍 ＆ フォルダ展開（容量自動削減ロジック付き）
+# ローカル解凍 ＆ フォルダ展開
 # ==============================================================================
 def save_to_dest_folder():
     download_dir = Path("./downloads")
@@ -296,7 +288,6 @@ def save_to_dest_folder():
                 if not filename or filename.startswith('.') or '__MACOSX' in file_info.filename:
                     continue
                     
-                # 💡 日付(YYYY-MM-DD)の直後にある時刻(HH-MM)だけを厳密に抽出
                 if not time_str and filename.endswith('.mp4'):
                     time_match = re.search(r'\d{4}-\d{2}-\d{2}[_T](\d{2})-(\d{2})', filename)
                     if time_match:
@@ -318,7 +309,6 @@ def save_to_dest_folder():
         print(f"❌ 解凍処理中にエラーが発生しました: {extract_err}")
         return False
     finally:
-        # 💡 解凍が終わったら不要になった巨大な元のZIPファイルを即座に削除して容量を確保！
         try:
             target_zip.unlink()
             print(f"🧹 ディスク容量確保のため、解凍済みのZIP（{target_zip.name}）を削除しました。")
@@ -329,9 +319,36 @@ def save_to_dest_folder():
     return {"case_no": case_no, "parent": parent_folder_name, "date": full_target_datetime}
 
 # ==============================================================================
-# メイン処理（重複通知防止 ＆ タイムアウト緩和版）
+# メイン処理
 # ==============================================================================
 if __name__ == "__main__":
+    # モード判定：--notify-only オプションが指定された場合は「通知のみ」を実行
+    if len(sys.argv) > 1 and sys.argv[1] == "--notify-only":
+        if CACHE_FILE.exists():
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                processed_cases = json.load(f)
+                
+            jst = timezone(timedelta(hours=9))
+            now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
+            
+            print("\n📢 アップロード完了後のGoogleドライブから個別URLを取得して通知を送信中...")
+            for case_no, res_item in processed_cases.items():
+                folder_url = get_uploaded_drive_folder_url(res_item["parent"])
+                
+                reply_text = (
+                    f"└ ✅ *自動保存完了*\n"
+                    f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
+                    f"🏢 対象店舗: `{res_item['parent']}`\n"
+                    f"📅 対象日時: `{res_item['date']}`\n"
+                    f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
+                    f"⏳ 完了時刻: {now_jst}"
+                )
+                send_google_chat_reply(reply_text, case_no)
+        else:
+            print("📭 通知対象の情報が存在しませんでした。")
+        sys.exit(0)
+
+    # --- 通常実行（動画DL＆解凍ステップ） ---
     DRIVE_TARGET_PATH.mkdir(parents=True, exist_ok=True)
 
     print("🔍 Gmailスキャン開始...")
@@ -352,28 +369,15 @@ if __name__ == "__main__":
             
         print("\n✨ 動画のローカル展開完了")
         
-        jst = timezone(timedelta(hours=9))
-        now_jst = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
-        
-        # 💡 重複通知を防止するため、案件No（case_no）ごとにユニーク（1つ）にまとめる
+        # 案件ごとに重複を除外してキャッシュファイルに保存
         processed_cases = {}
         for item in result_info_list:
             c_no = item["case_no"]
             if c_no not in processed_cases:
                 processed_cases[c_no] = item
-        
-        # 重複のない案件ごとに1回だけ通知を送信
-        for case_no, res_item in processed_cases.items():
-            folder_url = create_and_get_drive_folder_url(res_item["parent"])
+                
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(processed_cases, f, ensure_ascii=False, indent=2)
             
-            reply_text = (
-                f"└ ✅ *自動保存完了*\n"
-                f"📂 ドライブへの同期アップロードが正常に完了しました。\n"
-                f"🏢 対象店舗: `{res_item['parent']}`\n"
-                f"📅 対象日時: `{res_item['date']}`\n"
-                f"🔗 <{folder_url}|【共有URL】この案件の固定フォルダはこちら>\n"
-                f"⏳ 完了時刻: {now_jst}"
-            )
-            send_google_chat_reply(reply_text, case_no)
     else:
         print("📭 新着の対象メールはありませんでした。")
